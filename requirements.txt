@@ -1,0 +1,21 @@
+# Web Framework & Lambda Adapter
+fastapi>=0.135.2
+uvicorn>=0.42.0
+mangum>=0.17.0
+numpy<2.0.0
+
+# LangChain Ecosystem
+langchain>=1.2.13
+langchain-community>=0.4.1
+langchain-google-genai>=4.2.1
+langchain-groq>=1.1.2
+langchain-pinecone>=0.2.13
+langgraph>=1.1.3
+
+# Vector Database & Data Handling
+pinecone-client>=6.0.0
+pydantic>=2.12.5
+# pypdf>=6.9.2
+
+# Utilities
+python-dotenv>=1.2.2

@@ -1,0 +1,91 @@
+.env
+
+__pycache__/
+*.pyc
+.vscode/
+.DS_Store
+resume_analyzer/__pycache__/
+resume_analyzer/*.pyc
+
+
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+temp_*.pdf
+temp_*.json
+*.log
+
+# Output files
+output/
+resume_analysis*.json
+resume_highlighted*.pdf
+Resume_analysis/output/
+
+
+# Adobe SDK
+pdfservices-api-credentials.json
+
+# Testing
+test_resumes/
+*.pdf
+*.json
+
+
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+chroma_db/
+
+requirements.zip
+
+node_modules/
+
+node_modules
+
