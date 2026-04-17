@@ -71,3 +71,5 @@ Get full chat history for a thread.
 
 ### DELETE /api/v1/chat/{thread_id}
 Delete a chat thread.
+
+
