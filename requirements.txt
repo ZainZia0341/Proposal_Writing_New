@@ -1,4 +1,5 @@
 # Web Framework & Lambda Adapter
+boto3>=1.40.0
 fastapi>=0.135.2
 uvicorn>=0.42.0
 mangum>=0.17.0

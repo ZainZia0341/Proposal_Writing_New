@@ -1,398 +1,675 @@
-# graph.py
-
-from typing import TypedDict, Annotated
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import SystemMessage, HumanMessage
-from .llm import llm
-from .vector_store import get_retriever
-
-# Define State
-class State(TypedDict):
-    messages: Annotated[list, add_messages]
-    job_description: str
-    context: str
-
-# System prompt enforcing your specific pattern
-
-SYSTEM_PROMPT = """You are an expert proposal writer for GeeksVisor — a team of Full Stack & AI Developers with 7+ years of experience and 30+ SaaS/MVP/AI apps delivered.
-
-Your job is to write a SHORT, PUNCHY, HIGH-CONVERTING Upwork/LinkedIn proposal based on the job description, using the style and patterns defined below.
-
-════════════════════════════
-📌 HOOK OPTIONS (Pick the most relevant one based on job context)
-════════════════════════════
-1. 🟢 Hi, this looks like a perfect fit.
-2. 🟢 Hi, this sounds like a perfect fit.
-3. 🟢 Hi, this is a perfect match.
-4. 🟢 Hi, this feels like a perfect fit.
-5. 🟢 Hi, this aligns closely with my recent project.
-6. 🟢 Hi, this aligns perfectly with my recent project.
-7. 🟢 I can definitely help here.
-8. 🟢 Hi, this sounds like a strong fit.
-9. 🟢 Hi, this is a strong match for my experience.
-10. 🟢 Hi, this looks like a great fit.
-
-**Hook Usage Rules:**
-- Always start with 🟢 emoji
-- Keep it natural and conversational
-- For AI/RAG jobs: use "aligns closely/perfectly"
-- For exact match jobs: use "perfect fit/match"
-- For advisory/consulting: use "I can definitely help here"
-
-════════════════════════════
-📌 OPENING PATTERN (After Hook)
-════════════════════════════
-**Standard Pattern:**
-I worked on [ProjectName], [brief context about the project], where I [specific relevant achievement that matches the job].
-
-**With "Alongside that" for multi-project relevance:**
-I worked on [Project1], where I [achievement1]. Alongside that, I worked on [Project2], where I [achievement2].
-
-**Examples:**
-- "I worked on EarlyBirdee, a production-ready SaaS platform where I built and owned full-stack features end-to-end..."
-- "I worked on LedgerIQ, an AI-driven platform where I built backend systems end-to-end, covering data ingestion, reporting and analytics flows..."
-- "I worked on a multi-tenant logistics SaaS where I handled complex backend workflows and core system functionality..."
-
-════════════════════════════
-📌 PROJECT PRESENTATION PATTERNS
-════════════════════════════
-
-**Pattern 1: "Some examples relevant to your vision"**
-Use when job needs multiple reference points:
-```
-𝐒𝐨𝐦𝐞 𝐞𝐱𝐚𝐦𝐩𝐥𝐞𝐬 𝐫𝐞𝐥𝐞𝐯𝐚𝐧𝐭 𝐭𝐨 𝐲𝐨𝐮𝐫 𝐯𝐢𝐬𝐢𝐨𝐧:
-1. [Project1] → [Brief description] ([Tech stack])
-2. [Project2] → [Brief description] ([Tech stack])
-3. [Project3] → [Brief description] ([Tech stack])
-```
-
-**Pattern 2: "Let me share the technical details of [Project]"**
-Use for deep-dive on most relevant project:
-```
-𝐋𝐞𝐭 𝐦𝐞 𝐬𝐡𝐚𝐫𝐞 𝐭𝐡𝐞 𝐭𝐞𝐜𝐡𝐧𝐢𝐜𝐚𝐥 𝐝𝐞𝐭𝐚𝐢𝐥𝐬 𝐨𝐟 [ProjectName]
-
-[ProjectName] ([website if available])
-𝐏𝐫𝐨𝐣𝐞𝐜𝐭 𝐎𝐯𝐞𝐫𝐯𝐢𝐞𝐰:
-[2-3 sentences describing the project]
-
-𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐝 𝐓𝐚𝐬𝐤𝐬:
-- [Task 1]
-- [Task 2]
-- [Task 3]
-
-𝐓𝐞𝐜𝐡𝐧𝐨𝐥𝐨𝐠𝐢𝐞𝐬 𝐔𝐬𝐞𝐝:
-[List of technologies]
-```
-
-**Pattern 3: "Let me share with you the details of my recent SaaS project"**
-Use for longer-form SaaS/complex projects:
-```
-𝐋𝐞𝐭 𝐦𝐞 𝐬𝐡𝐚𝐫𝐞 𝐰𝐢𝐭𝐡 𝐲𝐨𝐮 𝐭𝐡𝐞 𝐝𝐞𝐭𝐚𝐢𝐥𝐬 𝐨𝐟 𝐦𝐲 𝐫𝐞𝐜𝐞𝐧𝐭 𝐒𝐚𝐚𝐒 𝐩𝐫𝐨𝐣𝐞𝐜𝐭.
-[Full project details as in Pattern 2]
-```
-
-**Pattern 4: Simplified Project Details (for e-commerce/straightforward projects)**
-```
-𝐏𝐫𝐨𝐣𝐞𝐜𝐭 𝐃𝐞𝐭𝐚𝐢𝐥𝐬:
-- [Achievement 1]
-- [Achievement 2]
-- [Achievement 3]
-
-𝐓𝐞𝐜𝐡𝐧𝐨𝐥𝐨𝐠𝐢𝐞𝐬: [Inline list]
-```
-
-════════════════════════════
-📌 PORTFOLIO LINKS (Always include after project details)
-════════════════════════════
-
-**Standard Portfolio Block:**
-```
-Apart from this, I've worked on 30+ SaaS, MVP, and AI-driven applications, here's a quick glimpse:  
-saddlefit.io | ledgeriq.ai | wealthbuilder.io | earlybirdee.co | aplusresumes.ai | mijnpakketje.nl | soplan.com | viralapp.io
-```
-
-**Alternative Phrasings:**
-- "Apart from this, I've worked on 30+ SaaS, MVP, and AI-driven applications, here's a quick glimpse."
-- "I've worked on 30+ SaaS, MVP, and AI-driven applications, here's a quick glimpse:"
-- Place links on same line or next line depending on context
-
-════════════════════════════
-📌 CLOSING PATTERNS
-════════════════════════════
-
-**Pattern 1: Capability Statement + Question**
-```
-I'm comfortable [specific capability relevant to job].
-
-[Optional: Additional capability statement]
-
-Would you prefer to share details on chat, or schedule a quick call to align on next steps?
-
-Best,
-[Name]
-[Credential if applicable]
-```
-
-**Pattern 2: Value Proposition + Question**
-```
-[1-2 sentences about what you bring to this specific project]
-
-Let me know if you are comfortable sharing the details over chat, or would you prefer to schedule a call?
-
-Best,
-[Name]
-[Credential if applicable]
-```
-
-**Capability Statement Examples:**
-- "I'm comfortable owning features end-to-end, from crafting clean UI components to building reliable backend APIs"
-- "I'm comfortable taking full ownership of the backend and keeping the codebase clean, predictable, and easy to build on"
-- "I'm comfortable working closely with your team, staying aligned on decisions, and contributing in a way that fits how you already build and ship"
-- "I'm comfortable jumping into existing repositories, understanding the current architecture, and delivering reliable fixes"
-- "I'm comfortable working inside an existing AWS setup, managing compute, storage, and databases"
-- "I build systems that are easy for others to work with, clear patterns, simple extension points"
-
-════════════════════════════
-📌 SIGNATURE FORMATS
-════════════════════════════
-
-**Standard (Hasnain):**
-```
-Best,
-Hasnain Khan
-Github: github.com/itshasnainkhanofficial
-```
-
-**AWS/Backend (Mughees):**
-```
-Best,
-Mughees Siddiqui 
-AWS Certified Solutions Architect – Associate
-```
-
-**With GitHub (Mughees):**
-```
-Best,
-Mughees Siddiqui
-AWS Certified Solutions Architect – Associate
-Github: https://github.com/Mughees605
-```
-
-════════════════════════════
-📌 MAJOR PROJECTS REFERENCE
-════════════════════════════
-
-**EarlyBirdee (earlybirdee.co)**
-- Full Stack serverless job search platform
-- ATS job aggregation, Generative AI matching
-- Tech: React.js, Node.js, TypeScript, AWS Lambda, DynamoDB, EventBridge, Step Functions
-- Use for: Full-stack jobs, serverless architecture, AI integration, subscription models
-
-**LedgerIQ (ledgeriq.ai)**
-- AI-driven bookkeeping application
-- RAG, MongoDB vector storage, semantic search
-- Agentic workflows with LangChain/LangGraph
-- Tech: Vue.js, FastAPI, AWS Fargate/ECS, Mistral, Titan embeddings
-- Use for: AI/RAG jobs, Python backend, agentic workflows, vector search
-
-**SoPlan (soplan.com)**
-- Serverless appointment scheduling platform
-- Calendar & payment API integrations
-- Tech: Next.js, Node.js, AWS Lambda, Cognito, Stripe
-- Use for: Next.js jobs, scheduling systems, API integrations
-
-**SaddleFit (saddlefit.io)**
-- Multi-tenant e-commerce platform
-- Shopify, Stripe, shipping integrations
-- Tech: React, Node.js, AWS Lambda, DynamoDB
-- Use for: E-commerce jobs, marketplace platforms, multi-tenant systems
-
-**Aha-doc**
-- Collaborative AI document chat
-- OCR, citation tracking, semantic search
-- Tech: Vue.js, Node.js, GPT-4o-mini, Pinecone
-- Use for: Document processing, AI chat, OCR jobs
-
-**Multi-Tenant Logistics SaaS (Trabex)**
-- Trade compliance & global logistics
-- Fine-grained auth (OpenFGA), multi-tenant architecture
-- Tech: NestJS, TypeScript, AWS Lambda, DynamoDB, OpenFGA
-- Use for: Complex backend, multi-tenant, NestJS, authorization
-
-**ViralApp (viralapp.io)**
-- Social content scraping & insights
-- Tech: Node.js, AWS Lambda, Step Functions, RDS, S3
-- Use for: Data processing, AWS infrastructure, scraping
-
-════════════════════════════
-📌 WRITING STYLE RULES
-════════════════════════════
-
-**Structure:**
-1. Hook (with 🟢)
-2. Opening statement (1-2 sentences about relevant experience)
-3. Project examples (either "Some examples" list OR deep-dive with "Let me share")
-4. Portfolio links block
-5. Closing capability statement
-6. Call-to-action question
-7. Signature
-
-**Tone:**
-- Direct and professional
-- No fluff or GPT-speak
-- Specific technical details when relevant
-- Confident but not arrogant
-
-**Formatting:**
-- Use unicode bold for section headers (𝐏𝐫𝐨𝐣𝐞𝐜𝐭 𝐎𝐯𝐞𝐫𝐯𝐢𝐞𝐰)
-- Use standard markdown bold (**text**) for emphasis in prose
-- Single line breaks between paragraphs
-- Double line breaks before major sections
-- Use • bullets for simplified project details
-- Use - bullets for task lists
-
-**Length:**
-- Keep proposals under 300 words when possible
-- Long project details only when highly relevant
-- Multiple projects list when needed for credibility
-- Single deep-dive when there's a perfect match
-
-════════════════════════════
-📌 JOB TYPE → APPROACH MAPPING
-════════════════════════════
-
-| Job Type | Opening Pattern | Project Pattern | Signature |
-|----------|----------------|-----------------|-----------|
-| Full-stack SaaS | "I worked on [Project]..." | Deep-dive on most relevant | Hasnain or Mughees |
-| AI/RAG/LLM | "This aligns closely..." | LedgerIQ or Aha-doc deep-dive | Mughees |
-| Backend/AWS | "I worked on [backend project]..." | Technical details focus | Mughees (AWS) |
-| Multi-tenant | "I worked on [multi-tenant project]..." | Logistics SaaS deep-dive | Mughees |
-| E-commerce | "I worked on SaddleFit..." | Simplified project details | Hasnain or Mughees |
-| Next.js/Frontend | "I worked on SoPlan..." | Some examples list | Hasnain |
-| Python/FastAPI | "I worked on LedgerIQ..." | Deep-dive with tech stack | Mughees |
-
-════════════════════════════
-📌 TECH STACK RESTRICTIONS
-════════════════════════════
-
-**Allowed Technologies:**
-- Frontend: React.js | Next.js | Vue.js
-- Backend: Node.js | Express.js | NestJS | Python | Django | Flask | FastAPI
-- Databases: MongoDB | PostgreSQL | DynamoDB
-- Cloud: AWS (Lambda, ECS, Fargate, S3, DynamoDB, Cognito, EventBridge, Step Functions, SQS, SNS, API Gateway, CloudWatch)
-- AI/ML: OpenAI | AWS Bedrock | LangChain | LangGraph | Pinecone | FAISS | Hugging Face
-- Other: TypeScript | Docker | Kubernetes | Stripe | Shopify
-
-**Never mention:** Angular, Firebase, GCP, Azure, Ruby, PHP, Go, MySQL, Redis (unless specifically in context)
-
-════════════════════════════
-📌 RELEVANT PROJECT CONTEXT FROM VECTOR DB
-════════════════════════════
-{context}
-
-════════════════════════════
-📌 INSTRUCTIONS FOR GENERATING THE PROPOSAL
-════════════════════════════
-1. Read the job description carefully
-2. Select the most appropriate HOOK
-3. Write opening statement connecting your experience to their need
-4. Choose project presentation pattern (list vs deep-dive)
-5. Include most relevant project(s) from CONTEXT
-6. Add portfolio links block
-7. Write closing capability statement relevant to job
-8. Add call-to-action question
-9. Add appropriate signature
-10. Keep concise - no fluff
-
-**Critical:** Only use projects from the CONTEXT. Never invent projects or details.
-"""
-
-
-def format_proposal_for_display(text):
-    if isinstance(text, list):
-        text = text[-1].get("text", "") if text and isinstance(text[-1], dict) else str(text)
-
-    text = text.replace("\\n", "\n")   # convert literal slash-n to real newline
-    text = text.replace("\r\n", "\n")
-    text = text.replace("\r", "\n")
-
-    # remove extra spacing around existing <br>
-    text = text.replace("<br>\n", "<br>")
-    text = text.replace("\n<br>", "<br>")
-
-    # now convert remaining newlines to <br>
-    text = text.replace("\n", "<br>")
-
-    # cleanup repeated breaks
-    while "<br><br><br>" in text:
-        text = text.replace("<br><br><br>", "<br><br>")
-
-    return text
-
-def retrieve_context(state: State):
-    """Retrieves relevant projects based on the job description."""
-    retriever = get_retriever()
-    
-    print("Invoking retriever with job description:")
-    print(state["job_description"])
-    docs = retriever.invoke(state["job_description"])
-    
-    print(f"Retrieved {len(docs)} relevant documents for context.")
-    print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-    print(docs)
-    context_str = "\n\n".join([doc.page_content for doc in docs])
-    return {"context": context_str}
-
-def generate_proposal(state: State):
-    """Generates or modifies the proposal with Quota Error Handling."""
-    messages = state["messages"]
-    
-    # Inject system prompt if it's the first interaction
-    if True: # len(messages) == 1:
-        sys_msg = SystemMessage(content=SYSTEM_PROMPT.format(context=state.get("context", "")))
-        messages = [sys_msg] + messages
-
-    try:
-        # Attempt the LLM call
-        response = llm.invoke(messages)
-        
-        # If successful, format and return
-        formatted_text = format_proposal_for_display(response.content)
-        response.content = formatted_text
-        return {"messages": [response]}
-
-    except Exception as e:
-        # Check if the error is related to Quota/Rate Limits
-        error_msg = str(e).lower()
-        if "quota" in error_msg or "rate limit" in error_msg or "429" in error_msg:
-            # Create a "fake" AI message explaining the limit
-            limit_message = (
-                "⚠️ **Quota Limit Reached**<br><br>"
-                "It looks like we've hit the usage limit for the AI model. "
-                "Please wait a moment and try again, or contact support if this persists."
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+from app.config import settings
+from app.llm import invoke_json, invoke_text, llm_available
+from app.repositories import get_proposals_repository, get_users_repository
+from app.schemas import (
+    ConversationMessage,
+    GenerateProposalResponse,
+    MessageRole,
+    OptimizeProposalResponse,
+    ProposalOption,
+    ProposalThreadRecord,
+    ResponseType,
+    RetrieverToolMessage,
+    TaskStatus,
+)
+from app.seed_data import DEFAULT_TEMPLATES
+from app.vector_store import get_project_store
+
+
+class ProposalState(TypedDict, total=False):
+    mode: str
+    task_id: str
+    user_id: str
+    thread_id: str
+    template_id: str | None
+    selected_proposal_id: str | None
+    feedback_msg: str | None
+    job_details: dict[str, Any]
+    user_profile: dict[str, Any]
+    template_text: str
+    thread_record: dict[str, Any] | None
+    pinned_context: str
+    retrieval_attempt: int
+    vector_query: str
+    retrieved_projects: list[dict[str, Any]]
+    retrieval_used: bool
+    retrieval_accepted: bool
+    fallback_used: bool
+    should_retry: bool
+    direct_answer: str | None
+    response_type: str
+    proposals: list[dict[str, Any]]
+    updated_proposal: str | None
+    summary: str | None
+    last_retriever_tool_message: dict[str, Any] | None
+
+
+def _tokenize(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-zA-Z0-9\.\+#]+", text.lower()) if len(token) > 1}
+
+
+def _format_project(project: dict[str, Any]) -> str:
+    tech_stack = ", ".join(project.get("tech_stack", []))
+    return (
+        f"Project ID: {project['project_id']}\n"
+        f"Title: {project['title']}\n"
+        f"Role: {project['role']}\n"
+        f"Description: {project['description']}\n"
+        f"Tech Stack: {tech_stack}"
+    )
+
+
+def _truncate_summary(text: str) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    if len(words) <= 120:
+        return text
+    return " ".join(words[:120]).strip()
+
+
+def _summarize_messages(
+    messages: list[ConversationMessage] | list[dict[str, Any]], existing_summary: str | None = None
+) -> str:
+    normalized_messages = [
+        message if isinstance(message, ConversationMessage) else ConversationMessage.model_validate(message)
+        for message in messages
+    ]
+    summary_input = "\n".join(f"{message.role.value}: {message.content}" for message in normalized_messages)
+    if existing_summary:
+        summary_input = f"Existing summary:\n{existing_summary}\n\nAdditional messages:\n{summary_input}"
+
+    fallback = _truncate_summary(summary_input)
+    if not llm_available():
+        return fallback
+
+    return invoke_text(
+        system_prompt=(
+            "Summarize proposal-chat history. Keep confirmed facts, user preferences, and proposal changes. Be concise."
+        ),
+        user_prompt=summary_input,
+        fallback=fallback,
+    )
+
+
+def _apply_summary_window(
+    messages: list[ConversationMessage], existing_summary: str | None = None
+) -> tuple[list[ConversationMessage], str | None]:
+    if len(messages) <= settings.summary_trigger_messages:
+        return messages, existing_summary
+
+    older_messages = messages[:-settings.recent_messages_to_keep]
+    recent_messages = messages[-settings.recent_messages_to_keep :]
+    summary = _summarize_messages(older_messages, existing_summary=existing_summary)
+    return recent_messages, summary
+
+
+def _build_summary(record: dict[str, Any] | None) -> str | None:
+    if not record:
+        return None
+    messages = record.get("messages", [])
+    if len(messages) <= settings.summary_trigger_messages:
+        return record.get("summary")
+    older_messages = messages[:-settings.recent_messages_to_keep]
+    return _summarize_messages(older_messages, existing_summary=record.get("summary"))
+
+
+def _build_pinned_context(state: ProposalState) -> str:
+    user = state["user_profile"]
+    job = state["job_details"]
+    lines = [
+        f"User Name: {user['full_name']}",
+        f"Designation: {user['designation']}",
+        f"Expertise: {', '.join(user.get('expertise_areas', []))}",
+        f"Languages: {', '.join(user.get('experience_languages', []))}",
+        f"Template ID: {state['template_id'] or user['template_id']}",
+        f"Template Text: {state['template_text']}",
+        f"Job Title: {job['title']}",
+        f"Job Description: {job['description']}",
+        f"Budget: {job.get('budget') or 'Not specified'}",
+        f"Skills: {', '.join(job.get('required_skills', []))}",
+        f"Client Info: {job.get('client_info') or 'Not provided'}",
+    ]
+    if state.get("summary"):
+        lines.append(f"Conversation Summary: {state['summary']}")
+    if state.get("thread_record"):
+        selected_id = state.get("selected_proposal_id") or state["thread_record"].get("selected_proposal_id")
+        if selected_id:
+            lines.append(f"Selected Proposal ID: {selected_id}")
+            selected_proposal = next(
+                (
+                    proposal
+                    for proposal in state["thread_record"].get("proposals", [])
+                    if proposal["id"] == selected_id
+                ),
+                None,
             )
-            # We return this so the graph finishes normally and the user sees the error
-            return {"messages": [HumanMessage(content=limit_message, name="system_error")]}
-        
-        # For any other unexpected error, re-raise it to be caught by FastAPI
-        raise e
-# Build Graph
-builder = StateGraph(State)
-builder.add_node("retrieve", retrieve_context)
-builder.add_node("generate", generate_proposal)
+            if selected_proposal:
+                lines.append(f"Base Proposal Text: {selected_proposal['text']}")
+    return "\n".join(lines)
 
-# Flow: Start -> Retrieve (only if context is missing) -> Generate -> End
-def route_start(state: State):
-    if not state.get("context"):
-        return "retrieve"
-    return "generate"
 
-builder.add_conditional_edges(START, route_start)
-builder.add_edge("retrieve", "generate")
-builder.add_edge("generate", END)
+def _heuristic_query(state: ProposalState) -> str:
+    parts = [
+        state["job_details"]["title"],
+        state["job_details"]["description"],
+        ", ".join(state["job_details"].get("required_skills", [])),
+    ]
+    if state["mode"] == "optimize" and state.get("feedback_msg"):
+        parts.append(state["feedback_msg"] or "")
+    return " | ".join(part for part in parts if part)
 
-# Local memory saver for chat history
-memory = MemorySaver()
-graph = builder.compile(checkpointer=memory)
+
+def _llm_query(state: ProposalState) -> str:
+    fallback = {"query": _heuristic_query(state)}
+    payload = invoke_json(
+        system_prompt=(
+            "You create concise retrieval queries for proposal generation. "
+            "Return JSON with a single key named query."
+        ),
+        user_prompt=(
+            "Create a project-search query from this proposal context:\n\n"
+            f"{json.dumps({'job_details': state['job_details'], 'feedback_msg': state.get('feedback_msg')}, indent=2)}"
+        ),
+        fallback=fallback,
+    )
+    return str(payload.get("query", fallback["query"])).strip()
+
+
+def _needs_direct_answer(feedback_msg: str) -> bool:
+    direct_patterns = [
+        "what was budget",
+        "what is the budget",
+        "what was title",
+        "what is the title",
+        "client info",
+        "job title",
+        "job description",
+        "skills required",
+    ]
+    lowered = feedback_msg.lower()
+    if any(pattern in lowered for pattern in direct_patterns):
+        return True
+    action_words = ["change", "rewrite", "update", "modify", "improve", "shorter", "longer", "replace"]
+    return not any(word in lowered for word in action_words) and lowered.endswith("?")
+
+
+def _requires_retrieval(state: ProposalState) -> bool:
+    feedback = (state.get("feedback_msg") or "").lower()
+    trigger_keywords = [
+        "project",
+        "experience",
+        "aws",
+        "similar",
+        "portfolio",
+        "justify",
+        "example",
+        "past work",
+    ]
+    if state["mode"] == "generate":
+        return True
+    return any(keyword in feedback for keyword in trigger_keywords)
+
+
+def _verify_projects(state: ProposalState) -> tuple[bool, str]:
+    projects = state.get("retrieved_projects", [])
+    if not projects:
+        return False, "No projects were retrieved for this user."
+
+    query_tokens = _tokenize(
+        " ".join(
+            [
+                state["job_details"]["title"],
+                state["job_details"]["description"],
+                " ".join(state["job_details"].get("required_skills", [])),
+                state.get("feedback_msg") or "",
+            ]
+        )
+    )
+
+    overlaps = []
+    for project in projects:
+        project_tokens = _tokenize(
+            " ".join(
+                [
+                    project["title"],
+                    project["description"],
+                    " ".join(project.get("tech_stack", [])),
+                    project["role"],
+                ]
+            )
+        )
+        overlaps.append(len(query_tokens.intersection(project_tokens)))
+
+    best_overlap = max(overlaps, default=0)
+    if best_overlap >= 2:
+        return True, f"Retrieved projects matched the job context with overlap score {best_overlap}."
+
+    if llm_available():
+        payload = invoke_json(
+            system_prompt=(
+                "You verify whether retrieved portfolio projects are relevant enough for proposal writing. "
+                "Return JSON with accepted (boolean) and rationale (string)."
+            ),
+            user_prompt=(
+                "Job context:\n"
+                f"{json.dumps(state['job_details'], indent=2)}\n\n"
+                "Retrieved projects:\n"
+                f"{json.dumps(projects, indent=2)}"
+            ),
+            fallback={"accepted": False, "rationale": "Token overlap was too low for confident retrieval."},
+        )
+        return bool(payload.get("accepted", False)), str(payload.get("rationale", ""))
+
+    return False, "Retrieved projects were too weakly related to the job description."
+
+
+def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
+    user = state["user_profile"]
+    job = state["job_details"]
+    skills = ", ".join(job.get("required_skills", [])) or ", ".join(user.get("experience_languages", []))
+    project_lines = []
+    for project in state.get("retrieved_projects", [])[:2]:
+        project_lines.append(
+            f"{project['title']} - {project['description']} ({', '.join(project.get('tech_stack', []))})"
+        )
+    portfolio_section = "\n".join(project_lines) if project_lines else "Relevant portfolio examples available on request."
+
+    variants = [
+        (
+            "alt_1",
+            "Balanced",
+            f"Hi, this sounds like a strong fit.\n\n"
+            f"I'm {user['full_name']}, a {user['designation']} with hands-on experience in {skills}. "
+            f"Your job around {job['title']} is closely aligned with the kind of systems I build.\n\n"
+            f"Relevant experience:\n{portfolio_section}\n\n"
+            f"I can help you deliver this with a practical and reliable implementation. Would you like me to outline the execution plan?\n\n"
+            f"Best,\n{user['full_name']}",
+        ),
+        (
+            "alt_2",
+            "Consultative",
+            f"Hi, this aligns closely with the type of work I've been doing recently.\n\n"
+            f"The challenge in {job['title']} is not only shipping features, but making sure the solution is maintainable and aligned with {skills}. "
+            f"I've handled similar delivery problems across AI and backend projects.\n\n"
+            f"Relevant experience:\n{portfolio_section}\n\n"
+            f"If helpful, I can break this into milestones and recommend a clean technical approach.\n\n"
+            f"Best,\n{user['full_name']}",
+        ),
+        (
+            "alt_3",
+            "Fast Mover",
+            f"I can definitely help here.\n\n"
+            f"I've built similar systems using {skills} and can move quickly on a project like {job['title']}. "
+            f"My background as a {user['designation']} helps me bridge product goals with clean implementation.\n\n"
+            f"Relevant experience:\n{portfolio_section}\n\n"
+            f"If you want, I can start with the highest-impact deliverable first and keep the scope tight.\n\n"
+            f"Best,\n{user['full_name']}",
+        ),
+    ]
+    return [ProposalOption(id=item[0], label=item[1], text=item[2]) for item in variants]
+
+
+def _llm_generation(state: ProposalState) -> list[ProposalOption]:
+    fallback = {
+        "alternatives": [proposal.model_dump(mode="json") for proposal in _fallback_generation(state)]
+    }
+    projects_text = "\n\n".join(_format_project(project) for project in state.get("retrieved_projects", []))
+    payload = invoke_json(
+        system_prompt=(
+            "You write three distinct high-converting freelance proposals. "
+            "Return JSON with key alternatives, an array of objects containing id, label, and text. "
+            "The ids must be alt_1, alt_2, and alt_3."
+        ),
+        user_prompt=(
+            f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Retrieved projects:\n{projects_text or 'No strong retrieved projects. Use core skills only.'}\n\n"
+            "Write three proposal alternatives. Each should be distinct, concise, and specific."
+        ),
+        fallback=fallback,
+    )
+    alternatives = payload.get("alternatives", fallback["alternatives"])
+    return [ProposalOption.model_validate(item) for item in alternatives[:3]]
+
+
+def _llm_revision(state: ProposalState, base_text: str) -> str:
+    fallback = (
+        f"{base_text}\n\n"
+        f"Update requested: {state['feedback_msg']}\n"
+        "This draft was updated to reflect the latest feedback while preserving the original intent."
+    )
+    projects_text = "\n\n".join(_format_project(project) for project in state.get("retrieved_projects", []))
+    return invoke_text(
+        system_prompt=(
+            "You revise an existing freelance proposal. "
+            "Preserve the strongest parts of the original, apply the feedback exactly, and avoid inventing facts."
+        ),
+        user_prompt=(
+            f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Selected proposal:\n{base_text}\n\n"
+            f"Feedback:\n{state['feedback_msg']}\n\n"
+            f"Retrieved projects:\n{projects_text or 'No additional project context retrieved.'}"
+        ),
+        fallback=fallback,
+    )
+
+
+def initialize_state(state: ProposalState) -> ProposalState:
+    user = get_users_repository().get(state["user_id"])
+    if user is None:
+        raise ValueError(f"User '{state['user_id']}' was not found.")
+
+    thread_record = None
+    if state.get("thread_id"):
+        existing = get_proposals_repository().get(state["thread_id"])
+        if existing:
+            thread_record = existing.model_dump(mode="json")
+
+    template_id = state.get("template_id") or user.template_id
+    template_text = user.selected_template_text
+    if template_id in DEFAULT_TEMPLATES:
+        template_text = DEFAULT_TEMPLATES[template_id].body
+    if thread_record and thread_record.get("template_text"):
+        template_text = thread_record["template_text"]
+        template_id = thread_record.get("template_id", template_id)
+
+    state["user_profile"] = user.model_dump(mode="json")
+    state["template_id"] = template_id
+    state["template_text"] = template_text
+    state["thread_record"] = thread_record
+    state["retrieval_attempt"] = 0
+    state["retrieval_used"] = False
+    state["fallback_used"] = False
+    state["response_type"] = ResponseType.PROPOSALS.value
+    state["summary"] = _build_summary(thread_record)
+    state["pinned_context"] = _build_pinned_context(state)
+    return state
+
+
+def route_after_initialize(state: ProposalState) -> str:
+    if state["mode"] == "optimize":
+        return "classify_feedback"
+    return "generate_query"
+
+
+def classify_feedback(state: ProposalState) -> ProposalState:
+    feedback_msg = state.get("feedback_msg") or ""
+    state["direct_answer"] = None
+    if _needs_direct_answer(feedback_msg):
+        job = state["job_details"]
+        lowered = feedback_msg.lower()
+        if "budget" in lowered:
+            answer = f"The stored budget for this job is {job.get('budget') or 'not specified'}."
+        elif "title" in lowered:
+            answer = f"The stored job title is '{job['title']}'."
+        elif "client" in lowered:
+            answer = f"The stored client information is {job.get('client_info') or 'not provided'}."
+        elif "skills" in lowered:
+            answer = "The stored required skills are " + ", ".join(job.get("required_skills", [])) + "."
+        else:
+            answer = f"Here are the stored job details:\n{json.dumps(job, indent=2)}"
+        state["direct_answer"] = answer
+        state["response_type"] = ResponseType.DIRECT_ANSWER.value
+    return state
+
+
+def route_after_classification(state: ProposalState) -> str:
+    if state.get("direct_answer"):
+        return "persist_direct_answer"
+    if _requires_retrieval(state):
+        return "generate_query"
+    return "revise_proposal"
+
+
+def generate_query(state: ProposalState) -> ProposalState:
+    state["retrieval_attempt"] = int(state.get("retrieval_attempt", 0)) + 1
+    state["vector_query"] = _llm_query(state) if llm_available() else _heuristic_query(state)
+    return state
+
+
+def retrieve_projects(state: ProposalState) -> ProposalState:
+    projects = get_project_store().search_projects(
+        user_id=state["user_id"],
+        query=state["vector_query"],
+        top_k=settings.retrieval_top_k,
+    )
+    state["retrieved_projects"] = [project.model_dump(mode="json") for project in projects]
+    state["retrieval_used"] = True
+    return state
+
+
+def verify_retrieval(state: ProposalState) -> ProposalState:
+    accepted, rationale = _verify_projects(state)
+    matched_projects = state.get("retrieved_projects", [])
+    tool_message = RetrieverToolMessage(
+        query=state["vector_query"],
+        matched_project_ids=[project["project_id"] for project in matched_projects],
+        matched_project_titles=[project["title"] for project in matched_projects],
+        accepted=accepted,
+        rationale=rationale,
+        attempt=state["retrieval_attempt"],
+    )
+    state["retrieval_accepted"] = accepted
+    state["last_retriever_tool_message"] = tool_message.model_dump(mode="json")
+    state["should_retry"] = not accepted and state["retrieval_attempt"] < settings.retrieval_max_retries
+    if not accepted and not state["should_retry"]:
+        state["fallback_used"] = True
+    return state
+
+
+def route_after_retrieval(state: ProposalState) -> str:
+    if state.get("should_retry"):
+        return "generate_query"
+    if state["mode"] == "optimize":
+        return "revise_proposal"
+    return "generate_proposals"
+
+
+def generate_proposals(state: ProposalState) -> ProposalState:
+    proposals = _llm_generation(state) if llm_available() else _fallback_generation(state)
+    state["proposals"] = [proposal.model_dump(mode="json") for proposal in proposals]
+    state["response_type"] = ResponseType.PROPOSALS.value
+    return state
+
+
+def revise_proposal(state: ProposalState) -> ProposalState:
+    thread = state.get("thread_record")
+    if not thread:
+        raise ValueError(f"Thread '{state['thread_id']}' was not found for optimization.")
+
+    proposals = thread.get("proposals", [])
+    selected_id = state["selected_proposal_id"]
+    selected = next((proposal for proposal in proposals if proposal["id"] == selected_id), None)
+    if selected is None:
+        raise ValueError(f"Proposal '{selected_id}' was not found in thread '{state['thread_id']}'.")
+
+    updated_text = _llm_revision(state, selected["text"]) if llm_available() else (
+        f"{selected['text']}\n\nUpdate requested: {state['feedback_msg']}"
+    )
+    state["updated_proposal"] = updated_text
+    state["response_type"] = ResponseType.PROPOSAL_UPDATE.value
+    return state
+
+
+def persist_direct_answer(state: ProposalState) -> ProposalState:
+    thread = get_proposals_repository().get(state["thread_id"])
+    if thread is None:
+        raise ValueError(f"Thread '{state['thread_id']}' was not found for optimization.")
+
+    updated_messages = [
+        *thread.messages,
+        ConversationMessage(role=MessageRole.USER, content=state["feedback_msg"] or ""),
+        ConversationMessage(role=MessageRole.ASSISTANT, content=state["direct_answer"] or ""),
+    ]
+    trimmed_messages, summary = _apply_summary_window(updated_messages, existing_summary=thread.summary)
+    updated_record = thread.model_copy(
+        update={
+            "messages": trimmed_messages,
+            "summary": summary,
+            "latest_response_type": ResponseType.DIRECT_ANSWER,
+            "status": TaskStatus.COMPLETED,
+        }
+    )
+    stored = get_proposals_repository().upsert(updated_record)
+    state["summary"] = stored.summary
+    return state
+
+
+def persist_result(state: ProposalState) -> ProposalState:
+    proposals_repo = get_proposals_repository()
+    existing_thread = proposals_repo.get(state["thread_id"])
+
+    if state["mode"] == "generate":
+        thread_messages = [
+            ConversationMessage(
+                role=MessageRole.USER,
+                content=(
+                    f"Generate proposals for job '{state['job_details']['title']}' "
+                    f"with skills {', '.join(state['job_details'].get('required_skills', []))}."
+                ),
+            ),
+            ConversationMessage(
+                role=MessageRole.ASSISTANT,
+                content=json.dumps(state["proposals"], indent=2),
+            ),
+        ]
+        trimmed_messages, summary = _apply_summary_window(thread_messages, existing_summary=state.get("summary"))
+        record = ProposalThreadRecord(
+            user_id=state["user_id"],
+            thread_id=state["thread_id"],
+            job_details=state["job_details"],
+            template_id=state["template_id"],
+            template_text=state["template_text"],
+            proposals=[ProposalOption.model_validate(item) for item in state["proposals"]],
+            selected_proposal_id=None,
+            latest_response_type=ResponseType.PROPOSALS,
+            messages=trimmed_messages,
+            summary=summary,
+            last_retriever_tool_message=(
+                RetrieverToolMessage.model_validate(state["last_retriever_tool_message"])
+                if state.get("last_retriever_tool_message") and state.get("retrieval_accepted")
+                else None
+            ),
+            status=TaskStatus.COMPLETED,
+        )
+    else:
+        if existing_thread is None:
+            raise ValueError(f"Thread '{state['thread_id']}' was not found for optimization.")
+        updated_messages = [
+            *existing_thread.messages,
+            ConversationMessage(role=MessageRole.USER, content=state["feedback_msg"] or ""),
+            ConversationMessage(role=MessageRole.ASSISTANT, content=state["updated_proposal"] or ""),
+        ]
+        trimmed_messages, summary = _apply_summary_window(updated_messages, existing_summary=existing_thread.summary)
+        updated_proposals = []
+        for proposal in existing_thread.proposals:
+            if proposal.id == state["selected_proposal_id"]:
+                updated_proposals.append(
+                    ProposalOption(id=proposal.id, label=proposal.label, text=state["updated_proposal"] or proposal.text)
+                )
+            else:
+                updated_proposals.append(proposal)
+        record = existing_thread.model_copy(
+            update={
+                "proposals": updated_proposals,
+                "selected_proposal_id": state["selected_proposal_id"],
+                "latest_response_type": ResponseType.PROPOSAL_UPDATE,
+                "messages": trimmed_messages,
+                "summary": summary,
+                "last_retriever_tool_message": (
+                    RetrieverToolMessage.model_validate(state["last_retriever_tool_message"])
+                    if state.get("last_retriever_tool_message") and state.get("retrieval_accepted")
+                    else existing_thread.last_retriever_tool_message
+                ),
+                "status": TaskStatus.COMPLETED,
+            }
+        )
+
+    stored = proposals_repo.upsert(record)
+    state["summary"] = stored.summary
+    return state
+
+
+builder = StateGraph(ProposalState)
+builder.add_node("initialize_state", initialize_state)
+builder.add_node("classify_feedback", classify_feedback)
+builder.add_node("generate_query", generate_query)
+builder.add_node("retrieve_projects", retrieve_projects)
+builder.add_node("verify_retrieval", verify_retrieval)
+builder.add_node("generate_proposals", generate_proposals)
+builder.add_node("revise_proposal", revise_proposal)
+builder.add_node("persist_direct_answer", persist_direct_answer)
+builder.add_node("persist_result", persist_result)
+
+builder.add_edge(START, "initialize_state")
+builder.add_conditional_edges("initialize_state", route_after_initialize)
+builder.add_conditional_edges("classify_feedback", route_after_classification)
+builder.add_edge("generate_query", "retrieve_projects")
+builder.add_edge("retrieve_projects", "verify_retrieval")
+builder.add_conditional_edges("verify_retrieval", route_after_retrieval)
+builder.add_edge("generate_proposals", "persist_result")
+builder.add_edge("revise_proposal", "persist_result")
+builder.add_edge("persist_direct_answer", END)
+builder.add_edge("persist_result", END)
+
+proposal_graph = builder.compile()
+
+
+def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposalResponse:
+    result = proposal_graph.invoke(
+        {
+            "mode": "generate",
+            "task_id": task_id,
+            "user_id": payload["user_id"],
+            "thread_id": payload["thread_id"],
+            "template_id": payload.get("template_id"),
+            "job_details": payload["job_details"],
+        }
+    )
+    return GenerateProposalResponse(
+        thread_id=result["thread_id"],
+        task_id=task_id,
+        status=TaskStatus.COMPLETED,
+        proposals=[ProposalOption.model_validate(item) for item in result.get("proposals", [])],
+        retrieval_used=result.get("retrieval_used", False),
+        fallback_used=result.get("fallback_used", False),
+        retrieved_project_ids=[project["project_id"] for project in result.get("retrieved_projects", [])],
+        summary=result.get("summary"),
+    )
+
+
+def run_optimize_flow(task_id: str, payload: dict[str, Any]) -> OptimizeProposalResponse:
+    thread = get_proposals_repository().get(payload["thread_id"])
+    if thread is None:
+        raise ValueError(f"Thread '{payload['thread_id']}' was not found.")
+
+    result = proposal_graph.invoke(
+        {
+            "mode": "optimize",
+            "task_id": task_id,
+            "user_id": thread.user_id,
+            "thread_id": thread.thread_id,
+            "job_details": thread.job_details.model_dump(mode="json"),
+            "selected_proposal_id": payload["selected_proposal_id"],
+            "feedback_msg": payload["feedback_msg"],
+        }
+    )
+    return OptimizeProposalResponse(
+        thread_id=result["thread_id"],
+        task_id=task_id,
+        status=TaskStatus.COMPLETED,
+        response_type=ResponseType(result["response_type"]),
+        updated_proposal=result.get("updated_proposal"),
+        direct_answer=result.get("direct_answer"),
+        retrieval_used=result.get("retrieval_used", False),
+        fallback_used=result.get("fallback_used", False),
+        selected_proposal_id=payload["selected_proposal_id"],
+        summary=result.get("summary"),
+    )
