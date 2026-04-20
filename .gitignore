@@ -89,3 +89,9 @@ node_modules/
 
 node_modules
 
+!test_payloads.json
+!test_payloads/
+!test_payloads/*.json
+!tests/
+!tests/**/*.json
+

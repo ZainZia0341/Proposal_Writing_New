@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 
 def utc_now() -> str:
@@ -70,9 +71,11 @@ class JobDetails(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_skills_input(cls, values: Any) -> Any:
+    def normalize_input_fields(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
+        if "description" not in values and "job_description" in values:
+            values["description"] = values["job_description"]
         if "skills_required" not in values and "required_skills" in values:
             values["skills_required"] = values["required_skills"]
         if "skills_required" not in values and "skills" in values:
@@ -165,6 +168,14 @@ class UserSignupRequest(BaseModel):
     scraped_profile_text: str | None = None
     frontend_payload: dict[str, Any] | None = None
 
+    @field_validator("user_id", "selected_template_id", "custom_template_text", "ai_template_context", mode="before")
+    @classmethod
+    def normalize_optional_text_fields(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
     @field_validator("expertise_areas", "experience_languages", mode="before")
     @classmethod
     def normalize_lists(cls, value: Any) -> list[str]:
@@ -178,14 +189,22 @@ class UserSignupRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_template_inputs(self) -> "UserSignupRequest":
-        template_inputs = [
-            bool(self.selected_template_id),
-            bool(self.custom_template_text),
-            bool(self.ai_template_context),
-        ]
-        if sum(1 for value in template_inputs if value) > 1:
-            raise ValueError(
-                "Provide only one template source: selected_template_id, custom_template_text, or ai_template_context."
+        if not self.user_id:
+            raise PydanticCustomError(
+                "signup_user_id_required",
+                "user_id is required for signup. Frontend must send a stable user_id in the signup payload.",
+            )
+
+        template_fields = {
+            "selected_template_id": self.selected_template_id,
+            "custom_template_text": self.custom_template_text,
+            "ai_template_context": self.ai_template_context,
+        }
+        provided_template_fields = [name for name, value in template_fields.items() if value]
+        if len(provided_template_fields) > 1:
+            raise PydanticCustomError(
+                "signup_template_source_conflict",
+                "Provide only one template source in signup payload: selected_template_id, custom_template_text, or ai_template_context.",
             )
         return self
 
@@ -258,6 +277,7 @@ class OptimizeProposalRequest(BaseModel):
     thread_id: str
     selected_proposal_id: str
     feedback_msg: str
+    user_id: str | None = None
     async_mode: bool = False
 
 

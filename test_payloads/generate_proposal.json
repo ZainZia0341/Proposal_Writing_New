@@ -1,0 +1,15 @@
+{
+  "user_id": "zain_zia_001",
+  "job_details": {
+    "title": "Senior AI Developer for Children's Educational App",
+    "description": "We are looking for a developer to build an interactive AI platform that creates personalized learning stories for students.",
+    "budget": "$3,000",
+    "skills_required": [
+      "Node.js",
+      "Generative AI",
+      "API Integration"
+    ],
+    "client_info": "EdTech Startup in London"
+  },
+  "template_id": "custom-template-1"
+}

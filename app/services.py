@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import re
-from uuid import uuid4
 
 from fastapi import HTTPException
 
 from app.config import settings
 from app.llm import invoke_text, llm_available
-from app.repositories import get_tasks_repository, get_users_repository, mark_task_processing
+from app.logging_utils import get_logger
+from app.repositories import (
+    get_proposals_repository,
+    get_tasks_repository,
+    get_users_repository,
+    mark_task_processing,
+)
 from app.schemas import (
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
     OptimizeProposalResponse,
+    ProposalThreadRecord,
     TaskRecord,
     TaskStatus,
     TaskStatusResponse,
@@ -25,6 +31,8 @@ from app.schemas import (
 )
 from app.seed_data import DEFAULT_TEMPLATES, template_summaries
 from app.vector_store import get_project_store
+
+logger = get_logger(__name__)
 
 
 def list_templates() -> list[TemplateSummary]:
@@ -91,7 +99,8 @@ def _generate_ai_template(context: str) -> str:
 
 
 def signup_user(request: UserSignupRequest) -> UserSignupResponse:
-    user_id = request.user_id or f"user_{uuid4().hex[:10]}"
+    user_id = request.user_id
+    logger.info("Starting signup flow", extra={"user_id": user_id})
 
     if request.custom_template_text:
         template_type = TemplateType.CUSTOM
@@ -151,6 +160,10 @@ def signup_user(request: UserSignupRequest) -> UserSignupResponse:
     stored_user = users_repo.upsert(user)
     stored_projects = get_project_store().upsert_projects(stored_user.user_id, request.previous_projects)
 
+    logger.info(
+        "Signup flow completed",
+        extra={"user_id": stored_user.user_id, "stored_projects": stored_projects, "template_id": template_id},
+    )
     return UserSignupResponse(
         user=stored_user,
         stored_projects=stored_projects,
@@ -161,11 +174,13 @@ def signup_user(request: UserSignupRequest) -> UserSignupResponse:
 
 def build_generation_task(request: GenerateProposalRequest) -> TaskRecord:
     task = TaskRecord(thread_id=request.thread_id)
+    logger.info("Creating generation task", extra={"thread_id": request.thread_id, "task_id": task.task_id})
     return get_tasks_repository().create(task)
 
 
 def build_optimization_task(request: OptimizeProposalRequest) -> TaskRecord:
     task = TaskRecord(thread_id=request.thread_id)
+    logger.info("Creating optimization task", extra={"thread_id": request.thread_id, "task_id": task.task_id})
     return get_tasks_repository().create(task)
 
 
@@ -182,7 +197,22 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
     )
 
 
+def get_thread_or_404(thread_id: str) -> ProposalThreadRecord:
+    thread = get_proposals_repository().get(thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' was not found.")
+    return thread
+
+
+def validate_thread_ownership(thread_id: str, user_id: str | None) -> ProposalThreadRecord:
+    thread = get_thread_or_404(thread_id)
+    if user_id is not None and thread.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Thread does not belong to the provided user_id.")
+    return thread
+
+
 def finalize_generation_result(task_id: str, response: GenerateProposalResponse) -> GenerateProposalResponse:
+    logger.info("Finalizing generation task", extra={"task_id": task_id, "thread_id": response.thread_id})
     get_tasks_repository().update(
         task_id,
         thread_id=response.thread_id,
@@ -194,6 +224,7 @@ def finalize_generation_result(task_id: str, response: GenerateProposalResponse)
 
 
 def finalize_optimization_result(task_id: str, response: OptimizeProposalResponse) -> OptimizeProposalResponse:
+    logger.info("Finalizing optimization task", extra={"task_id": task_id, "thread_id": response.thread_id})
     get_tasks_repository().update(
         task_id,
         thread_id=response.thread_id,
@@ -205,6 +236,7 @@ def finalize_optimization_result(task_id: str, response: OptimizeProposalRespons
 
 
 def fail_task(task_id: str, error: Exception) -> None:
+    logger.error("Marking task as failed", extra={"task_id": task_id, "error": str(error)})
     get_tasks_repository().update(
         task_id,
         status=TaskStatus.FAILED,
@@ -213,4 +245,5 @@ def fail_task(task_id: str, error: Exception) -> None:
 
 
 def mark_task_started(task_id: str, thread_id: str | None = None) -> None:
+    logger.info("Marking task as started", extra={"task_id": task_id, "thread_id": thread_id})
     mark_task_processing(task_id, thread_id=thread_id)

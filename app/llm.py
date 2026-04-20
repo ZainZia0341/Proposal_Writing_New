@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-import logging
 from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
+from app.logging_utils import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -17,6 +17,7 @@ def get_llm():
     if settings.llm_provider == "groq" and settings.groq_api_key:
         from langchain_groq import ChatGroq
 
+        logger.info("Using Groq chat model for LLM provider")
         return ChatGroq(
             temperature=0.2,
             model_name="openai/gpt-oss-120b",
@@ -28,6 +29,7 @@ def get_llm():
     if settings.google_api_key:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        logger.info("Using Google Gemini chat model for LLM provider")
         return ChatGoogleGenerativeAI(
             model="gemini-2.5-pro",
             temperature=0.2,
@@ -36,6 +38,7 @@ def get_llm():
             max_retries=0,
         )
 
+    logger.warning("No external LLM provider configured, runtime will rely on fallbacks")
     return None
 
 
@@ -79,4 +82,5 @@ def invoke_json(system_prompt: str, user_prompt: str, fallback: dict[str, Any]) 
                 return json.loads(raw_response[start : end + 1])
             except json.JSONDecodeError:
                 pass
+        logger.warning("Could not parse LLM JSON response, using fallback payload")
         return fallback

@@ -5,8 +5,11 @@ from functools import lru_cache
 from typing import Protocol
 
 from app.config import settings
+from app.logging_utils import get_logger
 from app.schemas import ProposalThreadRecord, TaskRecord, TaskStatus, UserProfile, utc_now
 from app.seed_data import DUMMY_USER
+
+logger = get_logger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import boto3
@@ -148,26 +151,49 @@ class DynamoTasksRepository:
         return updated
 
 
+def repositories_mode() -> str:
+    if settings.use_dynamodb and boto3 is not None:
+        return "dynamodb"
+    return "in_memory"
+
+
 @lru_cache(maxsize=1)
 def get_users_repository() -> UsersRepository:
-    if settings.use_dynamodb and boto3 is not None:
+    mode = repositories_mode()
+    logger.info("Users repository mode selected: %s", mode)
+    if mode == "dynamodb":
         return DynamoUsersRepository()
     return InMemoryUsersRepository()
 
 
 @lru_cache(maxsize=1)
 def get_proposals_repository() -> ProposalsRepository:
-    if settings.use_dynamodb and boto3 is not None:
+    mode = repositories_mode()
+    logger.info("Proposals repository mode selected: %s", mode)
+    if mode == "dynamodb":
         return DynamoProposalsRepository()
     return InMemoryProposalsRepository()
 
 
 @lru_cache(maxsize=1)
 def get_tasks_repository() -> TasksRepository:
-    if settings.use_dynamodb and boto3 is not None:
+    mode = repositories_mode()
+    logger.info("Tasks repository mode selected: %s", mode)
+    if mode == "dynamodb":
         return DynamoTasksRepository()
     return InMemoryTasksRepository()
 
 
 def mark_task_processing(task_id: str, thread_id: str | None = None) -> TaskRecord | None:
+    logger.info("Marking task as processing", extra={"task_id": task_id, "thread_id": thread_id})
     return get_tasks_repository().update(task_id, status=TaskStatus.PROCESSING, thread_id=thread_id)
+
+
+def reset_in_memory_repositories() -> None:
+    _InMemoryStore.users = {}
+    _InMemoryStore.proposals = {}
+    _InMemoryStore.tasks = {}
+    _InMemoryStore.seeded = False
+    get_users_repository.cache_clear()
+    get_proposals_repository.cache_clear()
+    get_tasks_repository.cache_clear()

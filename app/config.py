@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,15 @@ class Settings:
     custom_template_word_limit: int = _as_int(os.getenv("CUSTOM_TEMPLATE_WORD_LIMIT"), default=400)
     scrape_text_char_limit: int = _as_int(os.getenv("SCRAPE_TEXT_CHAR_LIMIT"), default=12000)
     api_timeout_seconds: int = _as_int(os.getenv("API_TIMEOUT_SECONDS"), default=29)
+    log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_dir: Path = Path(os.getenv("LOG_DIR", "logs"))
+    log_file_name: str = os.getenv("LOG_FILE_NAME", "app.log")
+    log_max_bytes: int = _as_int(os.getenv("LOG_MAX_BYTES"), default=1_048_576)
+    log_backup_count: int = _as_int(os.getenv("LOG_BACKUP_COUNT"), default=3)
+
+    @property
+    def log_file_path(self) -> Path:
+        return self.log_dir / self.log_file_name
 
 
 settings = Settings()

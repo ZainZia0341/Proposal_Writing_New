@@ -1,0 +1,15 @@
+{
+  "user_id": "zain_zia_001",
+  "job_details": {
+    "title": "Senior Node.js Developer for Fintech",
+    "job_description": "We need an expert to build secure API gateways and handle financial transactions.",
+    "budget": "$5000",
+    "skills": [
+      "Node.js",
+      "AWS",
+      "PostgreSQL"
+    ],
+    "client_info": "Based in UK, focus on high security"
+  },
+  "template_id": "consultative_expert"
+}
