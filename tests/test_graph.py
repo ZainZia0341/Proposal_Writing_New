@@ -2,7 +2,34 @@ from __future__ import annotations
 
 from app.graph import run_generate_flow, run_optimize_flow
 from app.repositories import get_proposals_repository
-from app.schemas import ConversationMessage, JobDetails, MessageRole, ProposalOption, ProposalThreadRecord, ResponseType, TaskStatus
+from app.schemas import (
+    ConversationMessage,
+    FullStackUserProfile,
+    JobDetails,
+    MessageRole,
+    ProposalOption,
+    ProposalThreadRecord,
+    ResponseType,
+    TaskStatus,
+    TemplateSnapshot,
+    TemplateType,
+)
+
+
+USER_SNAPSHOT = FullStackUserProfile(
+    full_name="Zain Zia",
+    designation="Generative AI Developer",
+    expertise_areas=["LLMs", "RAG systems", "Vector Databases"],
+    experience_languages=["Node.js", "Python", "React.js"],
+    experience_years=5,
+    tone_preference="upwork",
+)
+
+TEMPLATE_SNAPSHOT = TemplateSnapshot(
+    template_id="custom-template-1",
+    template_type=TemplateType.CUSTOM,
+    template_text="Hi [Client Name], I saw your post for [Job Title]...",
+)
 
 
 def _seed_thread(thread_id: str = "thread_001") -> ProposalThreadRecord:
@@ -16,6 +43,8 @@ def _seed_thread(thread_id: str = "thread_001") -> ProposalThreadRecord:
             skills_required=["Node.js", "Generative AI", "API Integration"],
             client_info="EdTech Startup in London",
         ),
+        user_profile_snapshot=USER_SNAPSHOT,
+        template_snapshot=TEMPLATE_SNAPSHOT,
         template_id="custom-template-1",
         template_text="Custom template text",
         proposals=[
@@ -130,7 +159,8 @@ def test_graph_retries_then_accepts_retrieval(monkeypatch):
         {
             "user_id": "zain_zia_001",
             "thread_id": "thread_retry",
-            "template_id": "custom-template-1",
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
             "job_details": JobDetails(
                 title="AI Developer",
                 description="Need a strong RAG engineer",
@@ -145,6 +175,41 @@ def test_graph_retries_then_accepts_retrieval(monkeypatch):
     assert stored is not None
     assert stored.last_retriever_tool_message is not None
     assert stored.last_retriever_tool_message.attempt == 2
+
+
+def test_graph_propagates_model_used_into_generate_response(monkeypatch):
+    import app.graph as graph
+
+    monkeypatch.setattr(graph, "get_model_used", lambda: "groq:openai/gpt-oss-120b")
+    monkeypatch.setattr(graph, "_plan_vector_query_with_llm", lambda state: "education ai story platform")
+    monkeypatch.setattr(graph, "_verify_retrieval_with_llm", lambda state: {"accepted": True, "rationale": "Matched job context"})
+    monkeypatch.setattr(
+        graph,
+        "_generate_proposals_with_llm",
+        lambda state: [
+            graph.ProposalOption(id="alt_1", label="Balanced", text="P1"),
+            graph.ProposalOption(id="alt_2", label="Consultative", text="P2"),
+            graph.ProposalOption(id="alt_3", label="Fast Mover", text="P3"),
+        ],
+    )
+
+    response = run_generate_flow(
+        "task_model_used",
+        {
+            "user_id": "zain_zia_001",
+            "thread_id": "thread_model_used",
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="AI Developer",
+                description="Need a strong RAG engineer",
+                budget="$2,000",
+                skills_required=["Python", "Pinecone"],
+                client_info="Startup",
+            ).model_dump(mode="json"),
+        },
+    )
+    assert response.model_used == "groq:openai/gpt-oss-120b"
 
 
 def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
@@ -166,7 +231,8 @@ def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
         {
             "user_id": "zain_zia_001",
             "thread_id": "thread_fallback",
-            "template_id": "custom-template-1",
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
             "job_details": JobDetails(
                 title="Backend AI Engineer",
                 description="Need a proposal without relevant history",
@@ -203,6 +269,8 @@ def test_graph_summary_triggers_after_threshold(monkeypatch):
             skills_required=["Node.js"],
             client_info="Client",
         ),
+        user_profile_snapshot=USER_SNAPSHOT,
+        template_snapshot=TEMPLATE_SNAPSHOT,
         template_id="custom-template-1",
         template_text="Template",
         proposals=[

@@ -1,5 +1,25 @@
 {
   "user_id": "zain_zia_001",
+  "user_profile": {
+    "full_name": "Zain Zia",
+    "designation": "Generative AI Developer",
+    "expertise_areas": [
+      "LLMs",
+      "RAG systems",
+      "Vector Databases"
+    ],
+    "experience_languages": [
+      "Node.js",
+      "Python",
+      "React.js"
+    ],
+    "experience_years": 5
+  },
+  "template": {
+    "template_id": "consultative_expert",
+    "template_type": "provided",
+    "template_text": "Hi, this aligns closely with my recent project."
+  },
   "job_details": {
     "title": "Senior Node.js Developer for Fintech",
     "job_description": "We need an expert to build secure API gateways and handle financial transactions.",
@@ -10,6 +30,5 @@
       "PostgreSQL"
     ],
     "client_info": "Based in UK, focus on high security"
-  },
-  "template_id": "consultative_expert"
+  }
 }

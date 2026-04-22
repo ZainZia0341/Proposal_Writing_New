@@ -1,5 +1,26 @@
 {
   "user_id": "zain_zia_001",
+  "user_profile": {
+    "full_name": "Zain Zia",
+    "designation": "Generative AI Developer",
+    "expertise_areas": [
+      "LLMs",
+      "RAG systems",
+      "Character Consistency in AI Art"
+    ],
+    "experience_languages": [
+      "Node.js",
+      "Python",
+      "React.js"
+    ],
+    "experience_years": 5,
+    "tone_preference": "upwork"
+  },
+  "template": {
+    "template_id": "custom-template-1",
+    "template_type": "custom",
+    "template_text": "Hi! I saw your post for [Job Title]. I have extensive experience in [Skills] and recently built [Project Name] which is very similar to what you need. Let's connect!"
+  },
   "job_details": {
     "title": "Senior AI Developer for Children's Educational App",
     "description": "We are looking for a developer to build an interactive AI platform that creates personalized learning stories for students.",
@@ -10,6 +31,5 @@
       "API Integration"
     ],
     "client_info": "EdTech Startup in London"
-  },
-  "template_id": "custom-template-1"
+  }
 }

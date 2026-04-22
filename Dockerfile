@@ -9,10 +9,11 @@ COPY requirements.txt ${LAMBDA_TASK_ROOT}
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your application code
-# Assuming your code is in an 'app' folder
+# Copy the FastAPI application package and the local Uvicorn helper.
+# Lambda uses app.main.handler.
+# The repo-root main.py is only for local development convenience.
 COPY app/ ${LAMBDA_TASK_ROOT}/app/
+COPY main.py ${LAMBDA_TASK_ROOT}/main.py
 
-# Set the CMD to your handler (file_name.function_name)
-# Since your FastAPI app is wrapped in Mangum
+# Lambda entrypoint exposed via Mangum in app.main
 CMD [ "app.main.handler" ]

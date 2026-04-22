@@ -1,0 +1,33 @@
+{
+  "user_id": "zain_zia_001",
+  "projects": [
+    {
+      "project_id": "p1",
+      "title": "StoryBloom - AI Storybook Generator",
+      "description": "Built an AI storybook generator with Node.js and Gemini APIs.",
+      "tech_stack": [
+        "Node.js",
+        "OpenAI",
+        "Serverless"
+      ],
+      "role": "Lead Generative AI Developer"
+    },
+    {
+      "project_id": "p2",
+      "title": "Aha-doc - Document Intelligence",
+      "description": "Built a RAG workflow for complex documents and structured insights.",
+      "tech_stack": [
+        "Python",
+        "LangChain",
+        "Pinecone",
+        "FastAPI"
+      ],
+      "role": "Backend AI Engineer"
+    }
+  ],
+  "scraped_profile_text": "Experienced in Node.js, Python, proposal writing systems, and AI workflow automation.",
+  "full_stack_metadata": {
+    "source": "chrome-extension",
+    "owned_by": "full-stack"
+  }
+}

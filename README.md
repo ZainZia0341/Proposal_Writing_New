@@ -1,98 +1,111 @@
 # Proposal Writer API
 
-FastAPI-first backend for:
+FastAPI backend for AI-assisted freelance proposal generation and proposal optimization.
 
-- user signup and template selection
-- user-scoped project ingestion
-- proposal generation with LangGraph routing
-- proposal optimization with LangGraph routing
-- rolling thread summaries to control context size
+This backend now follows the current architecture:
+
+- Full Stack owns the user account table and user profile state
+- AI backend owns:
+  - built-in proposal templates
+  - Pinecone portfolio ingestion and retrieval
+  - proposal thread persistence
+  - proposal generation and optimization
+  - task lifecycle persistence
 
 ## What Is Implemented
 
-### FastAPI-only runtime
+### Runtime
 
-- The app runs locally with `FastAPI + Uvicorn`
-- `Mangum` is no longer part of the live application path
-- Main app entrypoint: `app.main:app`
-- Convenience launcher: `python main.py`
+- Local runtime: `FastAPI + Uvicorn`
+- AWS runtime: `FastAPI + Mangum` through `app.main.handler`
+- Main ASGI app: `app.main:app`
+- Local helper launcher: `python main.py`
 
-### Signup flow
+### Built-in Templates
 
-- `POST /api/v1/signup`
-- Stores user details in `Users-Table` shape through repository abstraction
-- Requires frontend to send a stable `user_id`; the backend no longer auto-generates it during signup
-- Supports:
-  - provided templates
-  - custom templates
-  - AI-generated templates
-- Rejects payloads that send more than one template source among:
-  - `selected_template_id`
-  - `custom_template_text`
-  - `ai_template_context`
-- Stores structured previous projects on the user record
-- Upserts project records into a user-scoped vector store namespace/filter
-- Reuses an existing Pinecone namespace for the same `user_id` instead of trying to create a duplicate namespace
-- Uses in-memory seeded fallback when cloud services are not configured
+- `GET /api/v1/templates`
+- Returns the canonical built-in templates including:
+  - `template_id`
+  - `label`
+  - `description`
+  - `best_for`
+  - `template_type`
+  - full template `body`
+- Full Stack should fetch templates from this endpoint instead of hard-coding them separately
 
-### Proposal generation flow
+### Portfolio Sync
+
+- `POST /api/v1/portfolio/sync`
+- Used by Full Stack or the Chrome extension to upsert project history into Pinecone
+- Uses `user_id` as the namespace / user scope
+- Accepts empty `projects`
+- Reuses the same namespace safely for later refreshes
+- Works with Pinecone when configured, otherwise uses an in-memory fallback store
+
+### Proposal Generation
 
 - `POST /api/v1/proposals/generate`
-- Creates or reuses a thread id
-- Loads user details and selected template
-- Uses LangGraph nodes for:
-  - context initialization
-  - optional message summarization
-  - query planning
-  - retrieval
-  - retrieval verification
-  - retry loop up to 3 attempts
-  - proposal generation
-  - LLM-based fallback generation when retrieval never validates, using stored user/job/template context
-  - persistence
+- Full Stack sends:
+  - `user_id`
+  - `user_profile`
+  - `template`
+  - `job_details`
+- The AI backend stores:
+  - `user_profile_snapshot`
+  - `template_snapshot`
+  - `job_details`
+  - generated alternatives
+  - retriever state
+  - rolling summary
+- The response includes `model_used` so the caller can see which model handled the request
 - Returns 3 indexed proposal alternatives:
   - `alt_1`
   - `alt_2`
   - `alt_3`
 
-### Proposal optimization flow
+### Proposal Optimization
 
 - `POST /api/v1/proposals/optimize`
-- Validates thread ownership when `user_id` is supplied
-- Loads thread, job details, selected proposal, and stored summary
-- Uses LLM-driven routing through LangGraph to decide:
-  - direct answer from stored context
+- Full Stack sends only:
+  - `thread_id`
+  - `selected_proposal_id`
+  - `feedback_msg`
+- Optional:
+  - `user_id` for extra ownership validation
+- Loads everything else from the stored proposal thread snapshot
+- The response includes `model_used`
+
+### LangGraph Behavior
+
+- LLM-guided query planning
+- LLM-guided retrieval verification
+- LLM-guided optimization routing:
+  - direct answer
   - revise only
   - retrieve then revise
-- Keeps pinned job/user/template context separate from rolling conversation history
-- Persists only the last accepted retriever tool payload
-
-### Memory and summary handling
-
-- Uses LangGraph message-aware state
-- Uses LangGraph `Command` routing
-- Uses LangGraph message removal pattern to keep the latest message window
-- Summarizes older messages and stores the summary on the thread record
+- Rolling message summarization when thread history grows
+- Fallback proposal generation when retrieval never validates
+- If Groq returns a rate limit error during a request, the backend switches that request to Google Gemini fallback models
 
 ### Observability
 
-- Structured logging to:
+- Structured logs to:
   - stdout
   - `logs/app.log`
-- Logs:
+- Logs include:
   - request start/end
   - storage mode selection
   - routing decisions
   - retrieval retries
   - summary creation
   - fallback generation
-  - task lifecycle events
+  - task lifecycle updates
 
 ## Main Endpoints
 
 - `GET /health`
 - `GET /api/v1/templates`
-- `POST /api/v1/signup`
+- `POST /api/v1/portfolio/sync`
 - `POST /api/v1/proposals/generate`
 - `POST /api/v1/proposals/optimize`
 - `GET /api/v1/tasks/{task_id}`
@@ -102,15 +115,21 @@ Legacy compatibility routes are still present:
 - `POST /generate_proposal`
 - `POST /chat_proposal`
 
+Removed from AI backend:
+
+- `POST /api/v1/signup`
+
+Signup and user-profile persistence now belong to the Full Stack side.
+
 ## Local Run
 
-Run with Uvicorn directly:
+Run with Uvicorn:
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Or use the helper launcher:
+Or use the helper:
 
 ```bash
 python main.py
@@ -128,19 +147,131 @@ http://127.0.0.1:8000/docs
 
 Used when DynamoDB / Pinecone config is missing.
 
-- user data: in-memory repository
 - proposal threads: in-memory repository
 - tasks: in-memory repository
-- project search: in-memory vector store seeded with dummy data
+- project retrieval: in-memory vector store seeded with demo projects
 
 ### Cloud mode
 
 Used when configured.
 
-- DynamoDB repositories for users, proposals, and tasks
-- Pinecone vector search with user namespace / metadata filter
-- Use the modern Python SDK package name `pinecone`
-- Do not install deprecated `pinecone-client`; if it is already installed in your venv, uninstall it
+- DynamoDB for:
+  - `Users-Proposals`
+  - `Proposal-Tasks`
+- Pinecone for project retrieval
+- Google embedding model: `gemini-embedding-001`
+
+## AWS Deployment
+
+`serverless.yml` builds a Lambda container image and routes HTTP API requests to `app.main.handler`.
+
+The stack creates these DynamoDB tables:
+
+- `Users-Proposals`
+- `Proposal-Tasks`
+
+### DynamoDB Table Shapes
+
+`Users-Proposals` stores one proposal thread per workflow, keyed by `thread_id`.
+
+Example item:
+
+```json
+{
+  "thread_id": "test_thread_555",
+  "user_id": "zain_zia_001",
+  "user_profile_snapshot": {
+    "full_name": "Zain Zia",
+    "designation": "Generative AI Developer",
+    "expertise_areas": ["LLMs", "RAG systems", "Vector Databases"],
+    "experience_languages": ["Node.js", "Python", "React.js"],
+    "experience_years": 5,
+    "tone_preference": "upwork"
+  },
+  "template_snapshot": {
+    "template_id": "consultative_expert",
+    "template_type": "provided",
+    "template_text": "Hi, this aligns closely with my recent project..."
+  },
+  "job_details": {
+    "title": "Senior AI Developer for Children's Educational App",
+    "description": "We are looking for a developer to build an interactive AI platform...",
+    "budget": "$3,000",
+    "required_skills": ["Node.js", "Generative AI", "API Integration"],
+    "client_info": "EdTech Startup in London"
+  },
+  "template_id": "consultative_expert",
+  "template_text": "Hi, this aligns closely with my recent project...",
+  "proposals": [
+    { "id": "alt_1", "label": "Balanced", "text": "Proposal option 1..." },
+    { "id": "alt_2", "label": "Consultative", "text": "Proposal option 2..." },
+    { "id": "alt_3", "label": "Fast Mover", "text": "Proposal option 3..." }
+  ],
+  "selected_proposal_id": "alt_2",
+  "latest_response_type": "proposal_update",
+  "summary": "User asked to justify the budget using AWS experience.",
+  "last_retriever_tool_message": {
+    "query": "aws rag backend proposal",
+    "matched_project_ids": ["p2"],
+    "matched_project_titles": ["Aha-doc - Document Intelligence"],
+    "accepted": true,
+    "rationale": "Relevant backend AI delivery evidence",
+    "attempt": 2
+  }
+}
+```
+
+`Proposal-Tasks` stores task lifecycle state, keyed by `task_id`.
+
+Example item:
+
+```json
+{
+  "task_id": "task_123",
+  "thread_id": "test_thread_555",
+  "status": "completed",
+  "result": {
+    "thread_id": "test_thread_555",
+    "status": "completed"
+  },
+  "error_message": null
+}
+```
+
+## Full Stack Contract Summary
+
+Full Stack should already own and store:
+
+- `user_id`
+- `full_name`
+- `designation`
+- `expertise_areas`
+- `experience_languages`
+- optional:
+  - `experience_years`
+  - `tone_preference`
+  - current template snapshot
+
+Full Stack should send to AI backend for portfolio sync:
+
+- `user_id`
+- `projects`
+- optional `scraped_profile_text`
+
+Full Stack should send to AI backend for proposal generation:
+
+- `user_id`
+- `user_profile`
+- `template`
+- `job_details`
+
+Full Stack should send to AI backend for proposal optimization:
+
+- `thread_id`
+- `selected_proposal_id`
+- `feedback_msg`
+
+The detailed contract is documented in [FULLSTACK_AI_CONTRACT.md](./FULLSTACK_AI_CONTRACT.md).
 
 ## Environment Variables
 
@@ -148,29 +279,30 @@ Important settings:
 
 - `LLM_PROVIDER`
 - `GROQ_API_KEY`
+- `GROQ_MODEL_NAME`
 - `GOOGLE_API_KEY`
+- `GOOGLE_MODEL_NAME`
+- `GOOGLE_FALLBACK_MODELS`
 - `USE_DYNAMODB`
 - `AWS_REGION`
-- `USERS_TABLE_NAME`
 - `USERS_PROPOSALS_TABLE_NAME`
 - `TASKS_TABLE_NAME`
 - `PINECONE_API_KEY`
 - `PINECONE_INDEX_NAME`
+- `RETRIEVAL_TOP_K`
 - `RETRIEVAL_MAX_RETRIES`
 - `SUMMARY_TRIGGER_MESSAGES`
 - `RECENT_MESSAGES_TO_KEEP`
-- `CUSTOM_TEMPLATE_CHAR_LIMIT`
-- `CUSTOM_TEMPLATE_WORD_LIMIT`
+- `API_TIMEOUT_SECONDS`
 - `LOG_LEVEL`
 - `LOG_DIR`
 - `LOG_FILE_NAME`
 
 ## Test Payload Files
 
-Payload files are split under `test_payloads/`:
+Payload files live under `test_payloads/`:
 
-- `signup_selected_template.json`
-- `signup_custom_template.json`
+- `portfolio_sync.json`
 - `generate_proposal.json`
 - `generate_proposal_job_description_alias.json`
 - `optimize_proposal_direct_answer.json`
@@ -183,7 +315,7 @@ There is also a root index file:
 
 ## Testing
 
-Run the test suite:
+Run the suite:
 
 ```bash
 python -m pytest -q
@@ -199,6 +331,11 @@ Current automated coverage includes:
 
 ## Notes
 
-- The backend is intentionally local-friendly and does not require cloud services for development.
-- Tasks still execute inline for FastAPI local testing.
-- The task-status model is already in place for a future async worker / background execution setup.
+- The backend is local-friendly and does not require cloud services for development.
+- Tasks still execute inline for local and current Lambda use.
+- The task-status model is already in place for a future async worker.
+
+
+
+  ANY - https://ma27f4xhy4.execute-api.us-east-1.amazonaws.com/
+  ANY - https://ma27f4xhy4.execute-api.us-east-1.amazonaws.com/{proxy+}

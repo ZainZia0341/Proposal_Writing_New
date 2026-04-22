@@ -7,12 +7,13 @@ from typing import Protocol
 
 from langchain_core.documents import Document
 
-from app.config import settings
-from app.logging_utils import get_logger
-from app.schemas import ProjectRecord
-from app.seed_data import DUMMY_PROJECTS, DUMMY_USER
+from .config import settings
+from .logging_utils import get_logger
+from .schemas import ProjectRecord
+from .seed_data import DUMMY_PROJECTS
 
 logger = get_logger(__name__)
+DEFAULT_DEMO_USER_ID = "zain_zia_001"
 
 
 def _tokenize(text: str) -> set[str]:
@@ -28,7 +29,7 @@ class ProjectVectorStore(Protocol):
 class InMemoryProjectVectorStore:
     def __init__(self) -> None:
         self._projects_by_user: dict[str, list[dict]] = {
-            DUMMY_USER.user_id: [project.model_dump(mode="json") for project in DUMMY_PROJECTS]
+            DEFAULT_DEMO_USER_ID: [project.model_dump(mode="json") for project in DUMMY_PROJECTS]
         }
 
     def upsert_projects(self, user_id: str, projects: list[ProjectRecord]) -> int:
@@ -143,7 +144,18 @@ class PineconeProjectVectorStore:
         ids = [f"{user_id}:{project.project_id}" for project in projects]
         # Pinecone namespaces are implicit. Reusing the same namespace with stable ids
         # updates records instead of trying to create a duplicate namespace.
-        self._vector_store.add_documents(documents=documents, ids=ids, namespace=user_id)
+        #
+        # Important for AWS Lambda:
+        # langchain-pinecone defaults to async_req=True for add_texts/add_documents,
+        # which triggers Pinecone's multiprocessing-based thread pool path. That path
+        # is not Lambda-friendly and can fail with FileNotFoundError / SemLock issues.
+        # Force synchronous upsert here so portfolio sync works reliably in Lambda.
+        self._vector_store.add_documents(
+            documents=documents,
+            ids=ids,
+            namespace=user_id,
+            async_req=False,
+        )
         self._known_namespaces.add(user_id)
         logger.info("Stored projects in Pinecone", extra={"user_id": user_id, "count": len(projects)})
         return len(projects)

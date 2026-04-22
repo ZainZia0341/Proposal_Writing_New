@@ -4,8 +4,8 @@ import os
 import re
 from pypdf import PdfReader
 
-from app.schemas import ProjectRecord
-from app.vector_store import get_project_store
+from .schemas import ProjectRecord
+from .vector_store import get_project_store
 
 
 def extract_text_from_pdf(file_path: str) -> str:

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.llm import reset_llm_runtime
 from app.main import app
 from app.repositories import reset_in_memory_repositories
 from app.vector_store import reset_project_store
@@ -20,11 +21,13 @@ def reset_local_state(monkeypatch):
     import app.repositories as repositories
     import app.vector_store as vector_store
 
+    reset_llm_runtime()
     monkeypatch.setattr(repositories, "repositories_mode", lambda: "in_memory")
     monkeypatch.setattr(vector_store, "project_store_mode", lambda: "in_memory")
     reset_in_memory_repositories()
     reset_project_store()
     yield
+    reset_llm_runtime()
     reset_in_memory_repositories()
     reset_project_store()
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas import ProjectRecord, TemplateRecord, TemplateSummary, TemplateType, UserProfile
+from .schemas import ProjectRecord, TemplateRecord
 
 
 DEFAULT_TEMPLATES: dict[str, TemplateRecord] = {
@@ -98,42 +98,3 @@ DUMMY_PROJECTS: list[ProjectRecord] = [
         role="Full Stack AI Developer",
     ),
 ]
-
-
-DUMMY_USER = UserProfile(
-    user_id="zain_zia_001",
-    full_name="Zain Zia",
-    designation="Generative AI Developer & SST (Applied Physics)",
-    expertise_areas=[
-        "LLMs",
-        "RAG systems",
-        "Vector Databases",
-        "Character Consistency in AI Art",
-    ],
-    experience_languages=["Node.js", "Python", "React.js"],
-    experience_years=5,
-    template_type=TemplateType.CUSTOM,
-    template_id="custom-template-1",
-    selected_template_text=(
-        "Hi! I saw your post for [Job Title]. I have extensive experience in [Skills] and recently built "
-        "[Project Name] which is very similar to what you need. Let's connect!"
-    ),
-    custom_template_text=(
-        "Hi! I saw your post for [Job Title]. I have extensive experience in [Skills] and recently built "
-        "[Project Name] which is very similar to what you need. Let's connect!"
-    ),
-    notes={"seeded": True},
-)
-
-
-def template_summaries() -> list[TemplateSummary]:
-    return [
-        TemplateSummary(
-            template_id=record.template_id,
-            label=record.label,
-            description=record.description,
-            best_for=record.best_for,
-            template_type=record.template_type,
-        )
-        for record in DEFAULT_TEMPLATES.values()
-    ]

@@ -1,17 +1,70 @@
-# serverless.yml
 service: ai-proposal-api
 useDotenv: true
+
+custom:
+  proposalsTableName: ${env:USERS_PROPOSALS_TABLE_NAME, 'Users-Proposals'}
+  tasksTableName: ${env:TASKS_TABLE_NAME, 'Proposal-Tasks'}
 
 provider:
   name: aws
   profile: Team-GV-Zain
-  region: us-east-1
-  stage: dev
+  region: ${env:AWS_REGION, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
   ecr:
     images:
       appimage:
         path: ./
         platform: linux/amd64
+  environment:
+    APP_NAME: ${env:APP_NAME, 'AI Proposal Generator API'}
+    API_PREFIX: ${env:API_PREFIX, '/api/v1'}
+    GROQ_API_KEY: ${env:GROQ_API_KEY}
+    GROQ_MODEL_NAME: ${env:GROQ_MODEL_NAME, 'openai/gpt-oss-120b'}
+    GOOGLE_API_KEY: ${env:GOOGLE_API_KEY}
+    GOOGLE_MODEL_NAME: ${env:GOOGLE_MODEL_NAME, 'gemini-2.5-pro'}
+    GOOGLE_FALLBACK_MODELS: ${env:GOOGLE_FALLBACK_MODELS, 'gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite'}
+    PINECONE_API_KEY: ${env:PINECONE_API_KEY}
+    PINECONE_INDEX_NAME: ${env:PINECONE_INDEX_NAME, 'freelance-portfolio-2'}
+    LLM_PROVIDER: ${env:LLM_PROVIDER, 'groq'}
+    USE_DYNAMODB: ${env:USE_DYNAMODB, 'true'}
+    USERS_PROPOSALS_TABLE_NAME: ${self:custom.proposalsTableName}
+    TASKS_TABLE_NAME: ${self:custom.tasksTableName}
+    RETRIEVAL_TOP_K: ${env:RETRIEVAL_TOP_K, '4'}
+    RETRIEVAL_MAX_RETRIES: ${env:RETRIEVAL_MAX_RETRIES, '3'}
+    SUMMARY_TRIGGER_MESSAGES: ${env:SUMMARY_TRIGGER_MESSAGES, '10'}
+    RECENT_MESSAGES_TO_KEEP: ${env:RECENT_MESSAGES_TO_KEEP, '10'}
+    API_TIMEOUT_SECONDS: ${env:API_TIMEOUT_SECONDS, '29'}
+    LOG_LEVEL: ${env:LOG_LEVEL, 'INFO'}
+    LOG_DIR: ${env:LOG_DIR, '/tmp/logs'}
+    LOG_FILE_NAME: ${env:LOG_FILE_NAME, 'app.log'}
+    LOG_MAX_BYTES: ${env:LOG_MAX_BYTES, '1048576'}
+    LOG_BACKUP_COUNT: ${env:LOG_BACKUP_COUNT, '3'}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:BatchGetItem
+            - dynamodb:BatchWriteItem
+            - dynamodb:ConditionCheckItem
+            - dynamodb:DeleteItem
+            - dynamodb:DescribeTable
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:UpdateItem
+          Resource:
+            - Fn::GetAtt: [UsersProposalsTable, Arn]
+            - Fn::Join: ['', [{ Fn::GetAtt: [UsersProposalsTable, Arn] }, '/index/*']]
+            - Fn::GetAtt: [ProposalTasksTable, Arn]
+            - Fn::Join: ['', [{ Fn::GetAtt: [ProposalTasksTable, Arn] }, '/index/*']]
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: '*'
 
 functions:
   api:
@@ -19,23 +72,54 @@ functions:
       name: appimage
     timeout: 29
     memorySize: 2048
-    environment:
-      # Add ALL your environment variables here
-      GROQ_API_KEY: ${env:GROQ_API_KEY}
-      GOOGLE_API_KEY: ${env:GOOGLE_API_KEY}
-      PINECONE_API_KEY: ${env:PINECONE_API_KEY}
-      PINECONE_INDEX_NAME: ${env:PINECONE_INDEX_NAME, "freelance-portfolio-2"}
-      LLM_PROVIDER: ${env:LLM_PROVIDER, "groq"}
-      USE_DYNAMODB: ${env:USE_DYNAMODB, "false"}
-      USERS_TABLE_NAME: ${env:USERS_TABLE_NAME, "Users-Table"}
-      USERS_PROPOSALS_TABLE_NAME: ${env:USERS_PROPOSALS_TABLE_NAME, "Users-Proposals"}
-      TASKS_TABLE_NAME: ${env:TASKS_TABLE_NAME, "Proposal-Tasks"}
-      RETRIEVAL_MAX_RETRIES: ${env:RETRIEVAL_MAX_RETRIES, "3"}
-      SUMMARY_TRIGGER_MESSAGES: ${env:SUMMARY_TRIGGER_MESSAGES, "10"}
-      RECENT_MESSAGES_TO_KEEP: ${env:RECENT_MESSAGES_TO_KEEP, "10"}
-      CUSTOM_TEMPLATE_CHAR_LIMIT: ${env:CUSTOM_TEMPLATE_CHAR_LIMIT, "2500"}
-      CUSTOM_TEMPLATE_WORD_LIMIT: ${env:CUSTOM_TEMPLATE_WORD_LIMIT, "400"}
     events:
+      - httpApi:
+          path: /
+          method: '*'
       - httpApi:
           path: /{proxy+}
           method: '*'
+
+resources:
+  Resources:
+    UsersProposalsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.proposalsTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: thread_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: thread_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user_id-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    ProposalTasksTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tasksTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: task_id
+            AttributeType: S
+          - AttributeName: thread_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: task_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: thread_id-index
+            KeySchema:
+              - AttributeName: thread_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL

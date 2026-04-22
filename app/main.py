@@ -6,22 +6,23 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from mangum import Mangum
 
-from app.config import settings
-from app.graph import run_generate_flow, run_optimize_flow
-from app.logging_utils import configure_logging, get_logger
-from app.repositories import repositories_mode
-from app.schemas import (
+from .config import settings
+from .graph import run_generate_flow, run_optimize_flow
+from .logging_utils import configure_logging, get_logger
+from .repositories import repositories_mode
+from .schemas import (
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
     OptimizeProposalResponse,
+    PortfolioSyncRequest,
+    PortfolioSyncResponse,
     TaskStatusResponse,
-    TemplateSummary,
-    UserSignupRequest,
-    UserSignupResponse,
+    TemplateRecord,
 )
-from app.services import (
+from .services import (
     build_generation_task,
     build_optimization_task,
     fail_task,
@@ -30,10 +31,10 @@ from app.services import (
     get_task_status,
     list_templates,
     mark_task_started,
-    signup_user,
+    sync_portfolio_for_ai_dev,
     validate_thread_ownership,
 )
-from app.vector_store import project_store_mode
+from .vector_store import project_store_mode
 
 configure_logging()
 logger = get_logger(__name__)
@@ -53,6 +54,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+handler = Mangum(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,26 +88,26 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get(f"{settings.api_prefix}/templates", response_model=list[TemplateSummary])
-async def get_templates() -> list[TemplateSummary]:
+@app.get(f"{settings.api_prefix}/templates", response_model=list[TemplateRecord])
+async def get_templates() -> list[TemplateRecord]:
     return list_templates()
 
 
-@app.post(f"{settings.api_prefix}/signup", response_model=UserSignupResponse)
-async def signup_endpoint(request: UserSignupRequest) -> UserSignupResponse:
+@app.post(f"{settings.api_prefix}/portfolio/sync", response_model=PortfolioSyncResponse)
+async def portfolio_sync_endpoint(request: PortfolioSyncRequest) -> PortfolioSyncResponse:
     try:
-        return signup_user(request)
+        return sync_portfolio_for_ai_dev(request)
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("Signup endpoint failed")
+        logger.exception("Portfolio sync endpoint failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post(f"{settings.api_prefix}/proposals/generate", response_model=GenerateProposalResponse)
 async def generate_proposal_endpoint(request: GenerateProposalRequest) -> GenerateProposalResponse:
-    task = build_generation_task(request)
     thread_id = request.thread_id or str(uuid4())
+    task = build_generation_task(thread_id)
     try:
         mark_task_started(task.task_id, thread_id=thread_id)
         response = run_generate_flow(
@@ -113,7 +115,8 @@ async def generate_proposal_endpoint(request: GenerateProposalRequest) -> Genera
             {
                 "user_id": request.user_id,
                 "thread_id": thread_id,
-                "template_id": request.template_id,
+                "user_profile": request.user_profile.model_dump(mode="json"),
+                "template_snapshot": request.template.model_dump(mode="json"),
                 "job_details": request.job_details.model_dump(mode="json"),
             },
         )

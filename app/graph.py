@@ -9,12 +9,13 @@ from langchain_core.messages.utils import count_tokens_approximately, trim_messa
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 
-from app.config import settings
-from app.llm import invoke_json, invoke_text
-from app.logging_utils import get_logger
-from app.repositories import get_proposals_repository, get_users_repository
-from app.schemas import (
+from .config import settings
+from .llm import get_model_used, invoke_json, invoke_text, reset_llm_request_state
+from .logging_utils import get_logger
+from .repositories import get_proposals_repository
+from .schemas import (
     ConversationMessage,
+    FullStackUserProfile,
     GenerateProposalResponse,
     MessageRole,
     OptimizeProposalResponse,
@@ -23,9 +24,9 @@ from app.schemas import (
     ResponseType,
     RetrieverToolMessage,
     TaskStatus,
+    TemplateSnapshot,
 )
-from app.seed_data import DEFAULT_TEMPLATES
-from app.vector_store import get_project_store
+from .vector_store import get_project_store
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ class ProposalState(MessagesState):
     thread_id: str
     template_id: str | None
     template_text: str
+    template_snapshot: dict[str, Any] | None
     user_profile: dict[str, Any]
     job_details: dict[str, Any]
     thread_record: dict[str, Any] | None
@@ -58,6 +60,39 @@ class ProposalState(MessagesState):
     proposals: list[dict[str, Any]]
     route_decision: str | None
     route_reason: str | None
+    model_used: str | None
+
+
+def _debug_print(title: str, payload: Any | None = None) -> None:
+    print(f"\n============= {title} =============", flush=True)
+    if payload is not None:
+        if isinstance(payload, str):
+            print(payload, flush=True)
+        else:
+            try:
+                print(json.dumps(payload, indent=2, ensure_ascii=False, default=str), flush=True)
+            except TypeError:
+                print(str(payload), flush=True)
+    print("========================================\n", flush=True)
+
+
+def _debug_node_start(node_name: str, state: ProposalState) -> None:
+    _debug_print(
+        f"starting node: {node_name}",
+        {
+            "mode": state.get("mode"),
+            "thread_id": state.get("thread_id"),
+            "task_id": state.get("task_id"),
+            "retrieval_attempt": state.get("retrieval_attempt"),
+            "selected_proposal_id": state.get("selected_proposal_id"),
+            "messages_count": len(state.get("messages", [])),
+            "retrieval_used": state.get("retrieval_used"),
+            "retrieval_accepted": state.get("retrieval_accepted"),
+            "fallback_used": state.get("fallback_used"),
+            "route_decision": state.get("route_decision"),
+            "model_used": state.get("model_used"),
+        },
+    )
 
 
 def _message_text(content: Any) -> str:
@@ -156,16 +191,18 @@ def _build_selected_proposal(state: ProposalState) -> dict[str, Any] | None:
 
 
 def _build_pinned_context(state: ProposalState, summary: str | None = None) -> str:
-    user = state["user_profile"]
+    user = state.get("user_profile") or {}
     job = state["job_details"]
+    template_snapshot = state.get("template_snapshot") or {}
     selected_proposal = _build_selected_proposal(state)
     lines = [
-        f"User Name: {user['full_name']}",
-        f"Designation: {user['designation']}",
+        f"User Name: {user.get('full_name', 'Not provided')}",
+        f"Designation: {user.get('designation', 'Not provided')}",
         f"Expertise: {', '.join(user.get('expertise_areas', []))}",
         f"Languages: {', '.join(user.get('experience_languages', []))}",
-        f"Template ID: {state['template_id'] or user['template_id']}",
-        f"Template Text: {state['template_text']}",
+        f"Tone Preference: {user.get('tone_preference') or 'Not provided'}",
+        f"Template ID: {template_snapshot.get('template_id') or state.get('template_id') or 'Not provided'}",
+        f"Template Text: {state.get('template_text') or template_snapshot.get('template_text') or 'Not provided'}",
         f"Job Title: {job['title']}",
         f"Job Description: {job['description']}",
         f"Budget: {job.get('budget') or 'Not specified'}",
@@ -436,30 +473,44 @@ def _proposal_message_text(proposals: list[ProposalOption]) -> str:
     return json.dumps([proposal.model_dump(mode="json") for proposal in proposals], indent=2)
 
 
+def _resolve_model_used(state: ProposalState) -> str | None:
+    return get_model_used() or state.get("model_used")
+
+
 def initialize_context(
     state: ProposalState,
 ) -> Command[Literal["summarize_history", "route_feedback", "plan_query"]]:
-    user = get_users_repository().get(state["user_id"])
-    if user is None:
-        raise ValueError(f"User '{state['user_id']}' was not found.")
-
+    _debug_node_start("initialize_context", state)
     thread_record = None
     if state.get("thread_id"):
         existing = get_proposals_repository().get(state["thread_id"])
         if existing:
             thread_record = existing.model_dump(mode="json")
 
-    template_id = state.get("template_id") or user.template_id
-    template_text = user.selected_template_text
-    if template_id in DEFAULT_TEMPLATES:
-        template_text = DEFAULT_TEMPLATES[template_id].body
-    if thread_record and thread_record.get("template_text"):
-        template_text = thread_record["template_text"]
-        template_id = thread_record.get("template_id", template_id)
+    if state["mode"] == "generate":
+        user_profile = state.get("user_profile") or {}
+        template_snapshot = state.get("template_snapshot") or {}
+        if not user_profile:
+            raise ValueError("Generate flow requires full stack user_profile in the request payload.")
+        if not template_snapshot:
+            raise ValueError("Generate flow requires full stack template snapshot in the request payload.")
+    else:
+        if thread_record is None:
+            raise ValueError(f"Thread '{state['thread_id']}' was not found.")
+        user_profile = thread_record.get("user_profile_snapshot") or {}
+        template_snapshot = thread_record.get("template_snapshot") or {}
+        if not user_profile or not template_snapshot:
+            raise ValueError(
+                "Thread is missing stored full stack snapshot context. Regenerate the thread with user_profile and template."
+            )
+
+    template_id = template_snapshot.get("template_id")
+    template_text = template_snapshot.get("template_text", "")
 
     updates: dict[str, Any] = {
-        "user_profile": user.model_dump(mode="json"),
+        "user_profile": user_profile,
         "thread_record": thread_record,
+        "template_snapshot": template_snapshot,
         "template_id": template_id,
         "template_text": template_text,
         "retrieval_attempt": 0,
@@ -474,6 +525,7 @@ def initialize_context(
         "proposals": [],
         "route_decision": None,
         "route_reason": None,
+        "model_used": state.get("model_used"),
     }
     updates["pinned_context"] = _build_pinned_context({**state, **updates})
 
@@ -496,6 +548,7 @@ def initialize_context(
 def summarize_history(
     state: ProposalState,
 ) -> Command[Literal["route_feedback", "plan_query"]]:
+    _debug_node_start("summarize_history", state)
     older_messages = state["messages"][:-settings.recent_messages_to_keep]
     if not older_messages:
         next_node: Literal["route_feedback", "plan_query"] = "route_feedback" if state["mode"] == "optimize" else "plan_query"
@@ -507,6 +560,7 @@ def summarize_history(
     updates: dict[str, Any] = {
         "summary": summary,
         "messages": removals,
+        "model_used": _resolve_model_used(state),
     }
     updates["pinned_context"] = _build_pinned_context({**state, **updates}, summary=summary)
     logger.info(
@@ -519,7 +573,9 @@ def summarize_history(
 def route_feedback(
     state: ProposalState,
 ) -> Command[Literal["answer_direct_from_context", "revise_selected_proposal", "plan_query"]]:
+    _debug_node_start("route_feedback", state)
     decision = _route_feedback_with_llm(state)
+    _debug_print("route decision output", decision)
     route = str(decision.get("route", "retrieve_then_revise"))
     answer_kind = str(decision.get("answer_kind", "generic"))
     reason = str(decision.get("reason", ""))
@@ -527,6 +583,7 @@ def route_feedback(
         "route_decision": route,
         "route_reason": reason,
         "direct_answer_kind": answer_kind,
+        "model_used": _resolve_model_used(state),
     }
     if route == "direct_answer":
         updates["response_type"] = ResponseType.DIRECT_ANSWER.value
@@ -545,6 +602,7 @@ def route_feedback(
 
 
 def answer_direct_from_context(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("answer_direct_from_context", state)
     answer = _build_direct_answer_text(state)
     logger.info("Generated direct answer from stored context", extra={"thread_id": state["thread_id"]})
     return {
@@ -555,8 +613,10 @@ def answer_direct_from_context(state: ProposalState) -> dict[str, Any]:
 
 
 def plan_query(state: ProposalState) -> Command[Literal["retrieve_projects"]]:
+    _debug_node_start("plan_query", state)
     query = _plan_vector_query_with_llm(state)
     attempt = int(state.get("retrieval_attempt", 0)) + 1
+    _debug_print("planned vector query output", {"attempt": attempt, "query": query})
     logger.info(
         "Planned vector query",
         extra={"thread_id": state["thread_id"], "attempt": attempt, "query": query},
@@ -565,16 +625,26 @@ def plan_query(state: ProposalState) -> Command[Literal["retrieve_projects"]]:
         update={
             "vector_query": query,
             "retrieval_attempt": attempt,
+            "model_used": _resolve_model_used(state),
         },
         goto="retrieve_projects",
     )
 
 
 def retrieve_projects(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("retrieve_projects", state)
     projects = get_project_store().search_projects(
         user_id=state["user_id"],
         query=state["vector_query"] or "",
         top_k=settings.retrieval_top_k,
+    )
+    _debug_print(
+        "retriever output",
+        {
+            "attempt": state.get("retrieval_attempt"),
+            "vector_query": state.get("vector_query"),
+            "retrieved_projects": [project.model_dump(mode="json") for project in projects],
+        },
     )
     logger.info(
         "Retrieved candidate projects",
@@ -589,6 +659,7 @@ def retrieve_projects(state: ProposalState) -> dict[str, Any]:
 def verify_retrieval(
     state: ProposalState,
 ) -> Command[Literal["plan_query", "generate_proposals", "generate_fallback_proposals", "revise_selected_proposal"]]:
+    _debug_node_start("verify_retrieval", state)
     verification = _verify_retrieval_with_llm(state)
     accepted = bool(verification.get("accepted", False))
     rationale = str(verification.get("rationale", ""))
@@ -603,6 +674,7 @@ def verify_retrieval(
     updates: dict[str, Any] = {
         "retrieval_accepted": accepted,
         "last_retriever_tool_message": tool_message.model_dump(mode="json"),
+        "model_used": _resolve_model_used(state),
     }
 
     if accepted:
@@ -624,21 +696,41 @@ def verify_retrieval(
             "next_node": next_node,
         },
     )
+    _debug_print(
+        "retrieval verification output",
+        {
+            "verification": verification,
+            "accepted": accepted,
+            "next_node": next_node,
+            "tool_message": tool_message.model_dump(mode="json"),
+        },
+    )
     return Command(update=updates, goto=next_node)
 
 
 def generate_proposals(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("generate_proposals", state)
     proposals = _generate_proposals_with_llm(state)
+    _debug_print(
+        "proposal generation output",
+        [proposal.model_dump(mode="json") for proposal in proposals],
+    )
     logger.info("Generated proposal alternatives", extra={"thread_id": state["thread_id"], "count": len(proposals)})
     return {
         "proposals": [proposal.model_dump(mode="json") for proposal in proposals],
         "messages": [_ai_message(_proposal_message_text(proposals))],
         "response_type": ResponseType.PROPOSALS.value,
+        "model_used": _resolve_model_used(state),
     }
 
 
 def generate_fallback_proposals(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("generate_fallback_proposals", state)
     proposals = _generate_fallback_proposals_with_llm(state)
+    _debug_print(
+        "fallback proposal generation output",
+        [proposal.model_dump(mode="json") for proposal in proposals],
+    )
     logger.info(
         "Generated fallback proposal alternatives with LLM context",
         extra={"thread_id": state["thread_id"], "count": len(proposals)},
@@ -648,23 +740,34 @@ def generate_fallback_proposals(state: ProposalState) -> dict[str, Any]:
         "messages": [_ai_message(_proposal_message_text(proposals))],
         "response_type": ResponseType.PROPOSALS.value,
         "fallback_used": True,
+        "model_used": _resolve_model_used(state),
     }
 
 
 def revise_selected_proposal(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("revise_selected_proposal", state)
     selected_proposal = _build_selected_proposal(state)
     if selected_proposal is None:
         raise ValueError(f"Proposal '{state.get('selected_proposal_id')}' was not found in thread '{state['thread_id']}'.")
     updated_text = _revise_proposal_with_llm(state, selected_proposal["text"])
+    _debug_print(
+        "proposal revision output",
+        {
+            "selected_proposal_id": selected_proposal["id"],
+            "updated_text": updated_text,
+        },
+    )
     logger.info("Revised selected proposal", extra={"thread_id": state["thread_id"], "proposal_id": selected_proposal["id"]})
     return {
         "updated_proposal": updated_text,
         "messages": [_ai_message(updated_text)],
         "response_type": ResponseType.PROPOSAL_UPDATE.value,
+        "model_used": _resolve_model_used(state),
     }
 
 
 def finalize_memory_window(state: ProposalState) -> Command[Literal["persist_result"]]:
+    _debug_node_start("finalize_memory_window", state)
     if len(state["messages"]) <= settings.summary_trigger_messages:
         return Command(goto="persist_result")
 
@@ -677,6 +780,7 @@ def finalize_memory_window(state: ProposalState) -> Command[Literal["persist_res
     updates: dict[str, Any] = {
         "summary": summary,
         "messages": removals,
+        "model_used": _resolve_model_used(state),
     }
     updates["pinned_context"] = _build_pinned_context({**state, **updates}, summary=summary)
     logger.info(
@@ -687,6 +791,7 @@ def finalize_memory_window(state: ProposalState) -> Command[Literal["persist_res
 
 
 def persist_result(state: ProposalState) -> dict[str, Any]:
+    _debug_node_start("persist_result", state)
     proposals_repo = get_proposals_repository()
     existing_thread = proposals_repo.get(state["thread_id"])
     stored_messages = _messages_to_schema(state["messages"])
@@ -696,6 +801,8 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
             user_id=state["user_id"],
             thread_id=state["thread_id"],
             job_details=state["job_details"],
+            user_profile_snapshot=FullStackUserProfile.model_validate(state["user_profile"]),
+            template_snapshot=TemplateSnapshot.model_validate(state["template_snapshot"] or {}),
             template_id=state["template_id"] or "",
             template_text=state["template_text"],
             proposals=[ProposalOption.model_validate(item) for item in state.get("proposals", [])],
@@ -731,6 +838,8 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
 
         record = existing_thread.model_copy(
             update={
+                "user_profile_snapshot": existing_thread.user_profile_snapshot,
+                "template_snapshot": existing_thread.template_snapshot,
                 "proposals": updated_proposals,
                 "selected_proposal_id": state.get("selected_proposal_id") or existing_thread.selected_proposal_id,
                 "latest_response_type": ResponseType(state["response_type"]),
@@ -749,6 +858,20 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
     logger.info(
         "Persisted proposal thread state",
         extra={"thread_id": state["thread_id"], "response_type": state["response_type"]},
+    )
+    _debug_print(
+        "persisted thread snapshot",
+        {
+            "thread_id": stored.thread_id,
+            "latest_response_type": stored.latest_response_type.value,
+            "summary": stored.summary,
+            "selected_proposal_id": stored.selected_proposal_id,
+            "last_retriever_tool_message": (
+                stored.last_retriever_tool_message.model_dump(mode="json")
+                if stored.last_retriever_tool_message
+                else None
+            ),
+        },
     )
     return {
         "summary": stored.summary,
@@ -782,6 +905,7 @@ proposal_graph = builder.compile()
 
 
 def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposalResponse:
+    reset_llm_request_state()
     existing_thread = get_proposals_repository().get(payload["thread_id"])
     if existing_thread and existing_thread.user_id != payload["user_id"]:
         raise ValueError(f"Thread '{payload['thread_id']}' does not belong to user '{payload['user_id']}'.")
@@ -804,7 +928,8 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
             "task_id": task_id,
             "user_id": payload["user_id"],
             "thread_id": payload["thread_id"],
-            "template_id": payload.get("template_id"),
+            "user_profile": payload["user_profile"],
+            "template_snapshot": payload["template_snapshot"],
             "job_details": payload["job_details"],
             "messages": messages,
             "summary": summary,
@@ -819,10 +944,12 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
         fallback_used=result.get("fallback_used", False),
         retrieved_project_ids=[project["project_id"] for project in result.get("retrieved_projects", [])],
         summary=result.get("summary"),
+        model_used=result.get("model_used"),
     )
 
 
 def run_optimize_flow(task_id: str, payload: dict[str, Any]) -> OptimizeProposalResponse:
+    reset_llm_request_state()
     thread = get_proposals_repository().get(payload["thread_id"])
     if thread is None:
         raise ValueError(f"Thread '{payload['thread_id']}' was not found.")
@@ -854,4 +981,5 @@ def run_optimize_flow(task_id: str, payload: dict[str, Any]) -> OptimizeProposal
         fallback_used=result.get("fallback_used", False),
         selected_proposal_id=payload["selected_proposal_id"],
         summary=result.get("summary"),
+        model_used=result.get("model_used"),
     )

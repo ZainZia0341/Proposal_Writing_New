@@ -4,10 +4,9 @@ import copy
 from functools import lru_cache
 from typing import Protocol
 
-from app.config import settings
-from app.logging_utils import get_logger
-from app.schemas import ProposalThreadRecord, TaskRecord, TaskStatus, UserProfile, utc_now
-from app.seed_data import DUMMY_USER
+from .config import settings
+from .logging_utils import get_logger
+from .schemas import ProposalThreadRecord, TaskRecord, TaskStatus, utc_now
 
 logger = get_logger(__name__)
 
@@ -15,12 +14,6 @@ try:  # pragma: no cover - optional dependency
     import boto3
 except ImportError:  # pragma: no cover - optional dependency
     boto3 = None
-
-
-class UsersRepository(Protocol):
-    def get(self, user_id: str) -> UserProfile | None: ...
-
-    def upsert(self, user: UserProfile) -> UserProfile: ...
 
 
 class ProposalsRepository(Protocol):
@@ -38,31 +31,8 @@ class TasksRepository(Protocol):
 
 
 class _InMemoryStore:
-    users: dict[str, dict] = {}
     proposals: dict[str, dict] = {}
     tasks: dict[str, dict] = {}
-    seeded: bool = False
-
-
-def _seed_defaults() -> None:
-    if _InMemoryStore.seeded:
-        return
-    _InMemoryStore.users[DUMMY_USER.user_id] = DUMMY_USER.model_dump(mode="json")
-    _InMemoryStore.seeded = True
-
-
-class InMemoryUsersRepository:
-    def __init__(self) -> None:
-        _seed_defaults()
-
-    def get(self, user_id: str) -> UserProfile | None:
-        record = _InMemoryStore.users.get(user_id)
-        return UserProfile.model_validate(copy.deepcopy(record)) if record else None
-
-    def upsert(self, user: UserProfile) -> UserProfile:
-        payload = user.model_copy(update={"updated_at": utc_now()})
-        _InMemoryStore.users[user.user_id] = payload.model_dump(mode="json")
-        return payload
 
 
 class InMemoryProposalsRepository:
@@ -95,22 +65,6 @@ class InMemoryTasksRepository:
         return updated
 
 
-class DynamoUsersRepository:
-    def __init__(self) -> None:
-        resource = boto3.resource("dynamodb", region_name=settings.aws_region)
-        self.table = resource.Table(settings.users_table_name)
-
-    def get(self, user_id: str) -> UserProfile | None:
-        result = self.table.get_item(Key={"user_id": user_id})
-        item = result.get("Item")
-        return UserProfile.model_validate(item) if item else None
-
-    def upsert(self, user: UserProfile) -> UserProfile:
-        payload = user.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json"))
-        return payload
-
-
 class DynamoProposalsRepository:
     def __init__(self) -> None:
         resource = boto3.resource("dynamodb", region_name=settings.aws_region)
@@ -123,7 +77,7 @@ class DynamoProposalsRepository:
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json"))
+        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
         return payload
 
 
@@ -134,7 +88,7 @@ class DynamoTasksRepository:
 
     def create(self, task: TaskRecord) -> TaskRecord:
         payload = task.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json"))
+        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
         return payload
 
     def get(self, task_id: str) -> TaskRecord | None:
@@ -147,7 +101,7 @@ class DynamoTasksRepository:
         if task is None:
             return None
         updated = task.model_copy(update={**fields, "updated_at": utc_now()})
-        self.table.put_item(Item=updated.model_dump(mode="json"))
+        self.table.put_item(Item=updated.model_dump(mode="json", exclude_none=True))
         return updated
 
 
@@ -155,15 +109,6 @@ def repositories_mode() -> str:
     if settings.use_dynamodb and boto3 is not None:
         return "dynamodb"
     return "in_memory"
-
-
-@lru_cache(maxsize=1)
-def get_users_repository() -> UsersRepository:
-    mode = repositories_mode()
-    logger.info("Users repository mode selected: %s", mode)
-    if mode == "dynamodb":
-        return DynamoUsersRepository()
-    return InMemoryUsersRepository()
 
 
 @lru_cache(maxsize=1)
@@ -190,10 +135,7 @@ def mark_task_processing(task_id: str, thread_id: str | None = None) -> TaskReco
 
 
 def reset_in_memory_repositories() -> None:
-    _InMemoryStore.users = {}
     _InMemoryStore.proposals = {}
     _InMemoryStore.tasks = {}
-    _InMemoryStore.seeded = False
-    get_users_repository.cache_clear()
     get_proposals_repository.cache_clear()
     get_tasks_repository.cache_clear()

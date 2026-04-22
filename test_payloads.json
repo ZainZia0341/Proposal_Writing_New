@@ -1,7 +1,6 @@
 {
   "payload_files": [
-    "test_payloads/signup_selected_template.json",
-    "test_payloads/signup_custom_template.json",
+    "test_payloads/portfolio_sync.json",
     "test_payloads/generate_proposal.json",
     "test_payloads/generate_proposal_job_description_alias.json",
     "test_payloads/optimize_proposal_direct_answer.json",

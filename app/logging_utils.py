@@ -5,7 +5,7 @@ import logging
 from logging.config import dictConfig
 from pathlib import Path
 
-from app.config import settings
+from .config import settings
 
 _LOGGING_CONFIGURED = False
 
