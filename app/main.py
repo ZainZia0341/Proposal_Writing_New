@@ -13,6 +13,8 @@ from .graph import run_generate_flow, run_optimize_flow
 from .logging_utils import configure_logging, get_logger
 from .repositories import repositories_mode
 from .schemas import (
+    BidSyncRequest,
+    BidSyncResponse,
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
@@ -31,6 +33,7 @@ from .services import (
     get_task_status,
     list_templates,
     mark_task_started,
+    sync_bid_examples_for_style_learning,
     sync_portfolio_for_ai_dev,
     validate_thread_ownership,
 )
@@ -104,6 +107,17 @@ async def portfolio_sync_endpoint(request: PortfolioSyncRequest) -> PortfolioSyn
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post(f"{settings.api_prefix}/proposals/bids/sync", response_model=BidSyncResponse)
+async def bids_sync_endpoint(request: BidSyncRequest) -> BidSyncResponse:
+    try:
+        return sync_bid_examples_for_style_learning(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Bid sync endpoint failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post(f"{settings.api_prefix}/proposals/generate", response_model=GenerateProposalResponse)
 async def generate_proposal_endpoint(request: GenerateProposalRequest) -> GenerateProposalResponse:
     thread_id = request.thread_id or str(uuid4())
@@ -116,7 +130,6 @@ async def generate_proposal_endpoint(request: GenerateProposalRequest) -> Genera
                 "user_id": request.user_id,
                 "thread_id": thread_id,
                 "user_profile": request.user_profile.model_dump(mode="json"),
-                "template_snapshot": request.template.model_dump(mode="json"),
                 "job_details": request.job_details.model_dump(mode="json"),
             },
         )

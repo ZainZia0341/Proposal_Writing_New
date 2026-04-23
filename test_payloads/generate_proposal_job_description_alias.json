@@ -15,11 +15,6 @@
     ],
     "experience_years": 5
   },
-  "template": {
-    "template_id": "consultative_expert",
-    "template_type": "provided",
-    "template_text": "Hi, this aligns closely with my recent project."
-  },
   "job_details": {
     "title": "Senior Node.js Developer for Fintech",
     "job_description": "We need an expert to build secure API gateways and handle financial transactions.",

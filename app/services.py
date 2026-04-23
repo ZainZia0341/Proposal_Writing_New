@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from .bid_examples import build_bid_style_record
 from .logging_utils import get_logger
 from .repositories import (
     get_proposals_repository,
@@ -9,6 +10,8 @@ from .repositories import (
     mark_task_processing,
 )
 from .schemas import (
+    BidSyncRequest,
+    BidSyncResponse,
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
@@ -51,6 +54,22 @@ def sync_portfolio_for_ai_dev(request: PortfolioSyncRequest) -> PortfolioSyncRes
         received_scraped_profile_text=bool(request.scraped_profile_text),
         model_used=None,
     )
+
+
+def sync_bid_examples_for_style_learning(request: BidSyncRequest) -> BidSyncResponse:
+    proposals_repo = get_proposals_repository()
+    if not request.bids:
+        proposals_repo.delete_bid_style(request.user_id)
+        logger.info("Cleared stored bid style examples", extra={"user_id": request.user_id})
+        return BidSyncResponse(user_id=request.user_id, stored_bids=0, model_used=None)
+
+    record = build_bid_style_record(request.user_id, request.bids)
+    stored = proposals_repo.upsert_bid_style(record)
+    logger.info(
+        "Stored bid style examples for proposal generation",
+        extra={"user_id": request.user_id, "stored_bids": len(stored.bids)},
+    )
+    return BidSyncResponse(user_id=request.user_id, stored_bids=len(stored.bids), model_used=None)
 
 
 def build_generation_task(thread_id: str) -> TaskRecord:

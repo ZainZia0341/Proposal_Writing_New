@@ -1,0 +1,33 @@
+{
+  "user_id": "zain_zia_001",
+  "bids": [
+    {
+      "job_details": {
+        "title": "AI Chatbot for Education Platform",
+        "description": "Need a developer to build a RAG-powered chatbot for students and teachers.",
+        "budget": "$2,500",
+        "required_skills": [
+          "Python",
+          "LangChain",
+          "Pinecone"
+        ],
+        "client_info": "EdTech startup in London"
+      },
+      "proposal_text": "Hi, this aligns closely with AI systems I have built recently. I can help you design a clean RAG workflow, keep retrieval reliable, and ship something practical for students and teachers."
+    },
+    {
+      "job_details": {
+        "title": "Full Stack SaaS Dashboard Improvement",
+        "description": "Need a developer to improve API integrations and frontend flows in an existing SaaS product.",
+        "budget": "$1,800",
+        "skills_required": [
+          "Node.js",
+          "React.js",
+          "API Integration"
+        ],
+        "client_info": "Product company in UK"
+      },
+      "proposal_text": "Hi, this sounds like a strong fit. I usually work end to end on exactly these kinds of improvements, from API cleanup to frontend polish, while keeping the code easy for the next developer to maintain."
+    }
+  ]
+}

@@ -24,7 +24,6 @@ from .schemas import (
     ResponseType,
     RetrieverToolMessage,
     TaskStatus,
-    TemplateSnapshot,
 )
 from .vector_store import get_project_store
 
@@ -36,9 +35,7 @@ class ProposalState(MessagesState):
     task_id: str
     user_id: str
     thread_id: str
-    template_id: str | None
-    template_text: str
-    template_snapshot: dict[str, Any] | None
+    bid_examples_markdown: list[str]
     user_profile: dict[str, Any]
     job_details: dict[str, Any]
     thread_record: dict[str, Any] | None
@@ -90,6 +87,7 @@ def _debug_node_start(node_name: str, state: ProposalState) -> None:
             "retrieval_accepted": state.get("retrieval_accepted"),
             "fallback_used": state.get("fallback_used"),
             "route_decision": state.get("route_decision"),
+            "bid_examples_count": len(state.get("bid_examples_markdown", [])),
             "model_used": state.get("model_used"),
         },
     )
@@ -193,7 +191,6 @@ def _build_selected_proposal(state: ProposalState) -> dict[str, Any] | None:
 def _build_pinned_context(state: ProposalState, summary: str | None = None) -> str:
     user = state.get("user_profile") or {}
     job = state["job_details"]
-    template_snapshot = state.get("template_snapshot") or {}
     selected_proposal = _build_selected_proposal(state)
     lines = [
         f"User Name: {user.get('full_name', 'Not provided')}",
@@ -201,8 +198,6 @@ def _build_pinned_context(state: ProposalState, summary: str | None = None) -> s
         f"Expertise: {', '.join(user.get('expertise_areas', []))}",
         f"Languages: {', '.join(user.get('experience_languages', []))}",
         f"Tone Preference: {user.get('tone_preference') or 'Not provided'}",
-        f"Template ID: {template_snapshot.get('template_id') or state.get('template_id') or 'Not provided'}",
-        f"Template Text: {state.get('template_text') or template_snapshot.get('template_text') or 'Not provided'}",
         f"Job Title: {job['title']}",
         f"Job Description: {job['description']}",
         f"Budget: {job.get('budget') or 'Not specified'}",
@@ -216,6 +211,16 @@ def _build_pinned_context(state: ProposalState, summary: str | None = None) -> s
         lines.append(f"Selected Proposal ID: {selected_proposal['id']}")
         lines.append(f"Base Proposal Text: {selected_proposal['text']}")
     return "\n".join(lines)
+
+
+def _bid_examples_to_text(state: ProposalState) -> str:
+    bid_examples = state.get("bid_examples_markdown", [])
+    if not bid_examples:
+        return "No stored previous bid examples were provided for this user."
+    rendered = []
+    for index, example in enumerate(bid_examples, start=1):
+        rendered.append(f"### Previous Bid Example {index}\n{example}")
+    return "\n\n---\n\n".join(rendered)
 
 
 def _summarize_messages(messages: list[BaseMessage], existing_summary: str | None = None) -> str:
@@ -374,19 +379,25 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
 def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
     fallback = {"alternatives": [proposal.model_dump(mode="json") for proposal in _fallback_generation(state)]}
     projects_text = "\n\n".join(_format_project(project) for project in state.get("retrieved_projects", []))
+    bid_examples_text = _bid_examples_to_text(state)
     payload = invoke_json(
         system_prompt=(
             "You write three distinct freelance proposal alternatives. "
             "Return JSON with key alternatives, an array of objects containing id, label, and text. "
             "The ids must be alt_1, alt_2, and alt_3. "
+            "You will receive previous bid examples written by the user. Study all of them together and infer the user's natural hook, tone, CTA style, pacing, and structure. "
+            "Choose the hook and style that best fit the current job. "
+            "Use those examples only as writing-style references, never as factual evidence for the current proposal. "
             "Stay strictly grounded in the provided user profile, accepted retrieved projects, and job details. "
             "Do not mention any skill, tool, framework, certification, domain experience, or project detail unless it is explicitly supported by the provided context. "
             "Do not let job-description keywords push you into claiming experience the user does not actually have. "
-            "The saved template is style guidance, not a rigid script. You may improve, adapt, or creatively expand the writing style, but you must remain within the factual boundaries of the provided context. "
+            "Never copy old client names, job facts, budgets, or project claims from the previous bid examples into the new proposal. "
+            "You may adapt the user's style naturally, but you must remain within the factual boundaries of the provided context. "
             "Never invent evidence, never overclaim, and never add unsupported project names."
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             f"Accepted retrieved projects:\n{projects_text or 'No accepted retrieved projects. Use only confirmed user profile and job context. Do not mention any project details.'}"
         ),
@@ -397,23 +408,28 @@ def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
 
 def _generate_fallback_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
     fallback = {"alternatives": [proposal.model_dump(mode="json") for proposal in _fallback_generation(state)]}
+    bid_examples_text = _bid_examples_to_text(state)
     payload = invoke_json(
         system_prompt=(
             "You write three distinct freelance proposal alternatives when portfolio retrieval did not return "
             "trusted supporting projects. Return JSON with key alternatives, an array of objects containing "
-            "id, label, and text. The ids must be alt_1, alt_2, and alt_3. Use only the provided user profile, "
-            "template style, job details, and recent conversation. "
+            "id, label, and text. The ids must be alt_1, alt_2, and alt_3. "
+            "You will receive previous bid examples written by the user. Study all of them together and infer the user's likely hook, tone, CTA style, pacing, and structure for the current job. "
+            "Use those examples only as style references. "
+            "Use only the provided user profile, job details, and recent conversation as factual grounding. "
             "Do not mention any project name, project achievement, or project detail because retrieval did not produce accepted evidence. "
             "Do not mention any skill, tool, framework, certification, or domain experience unless it is explicitly supported by the provided user profile. "
             "Do not let job-description keywords influence you into adding unsupported skills. "
-            "The saved template is style guidance, not a rigid script. You may write more naturally and creatively than the template, but you must stay strictly inside the factual boundaries of the provided context."
+            "Never copy old client names, job facts, budgets, or project claims from the previous bid examples. "
+            "You may write naturally and creatively, but you must stay strictly inside the factual boundaries of the provided context."
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             "Retriever status:\n"
             "No accepted retrieved projects were available after retry attempts. "
-            "Generate strong proposals from the user's real skills, designation, template, and the current job details only. "
+            "Generate strong proposals from the user's real skills, designation, previous writing style, and the current job details only. "
             "If a detail is not explicitly supported, leave it out."
         ),
         fallback=fallback,
@@ -428,17 +444,22 @@ def _revise_proposal_with_llm(state: ProposalState, base_text: str) -> str:
         "This draft was updated using the existing proposal context."
     )
     projects_text = "\n\n".join(_format_project(project) for project in state.get("retrieved_projects", []))
+    bid_examples_text = _bid_examples_to_text(state)
     return invoke_text(
         system_prompt=(
             "You revise an existing freelance proposal. Preserve the strongest parts of the original, "
             "apply the feedback exactly, and avoid inventing facts. "
+            "You will receive previous bid examples written by the user. Study all of them together and infer the user's natural hook, tone, CTA style, pacing, and structure. "
+            "Use those examples only as writing-style references if they help you make the revision sound more like the user. "
             "Do not add any skill, tool, framework, certification, industry background, or project detail unless it is explicitly supported by the provided context. "
             "Do not let the job description or feedback wording push you into claiming experience the user has not actually shown. "
             "If there are no accepted retrieved projects, do not add project-specific claims. "
-            "The template is guidance for tone and structure, not a rigid format. You may improve the writing while staying strictly within factual boundaries."
+            "Never copy old client names, job facts, budgets, or project claims from the previous bid examples. "
+            "You may improve the writing while staying strictly within factual boundaries."
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             f"Selected proposal:\n{base_text}\n\n"
             f"Accepted retrieved projects:\n{projects_text or 'No accepted retrieved projects. Do not mention project-specific details.'}"
@@ -481,38 +502,30 @@ def initialize_context(
     state: ProposalState,
 ) -> Command[Literal["summarize_history", "route_feedback", "plan_query"]]:
     _debug_node_start("initialize_context", state)
+    proposals_repo = get_proposals_repository()
     thread_record = None
     if state.get("thread_id"):
-        existing = get_proposals_repository().get(state["thread_id"])
+        existing = proposals_repo.get(state["thread_id"])
         if existing:
             thread_record = existing.model_dump(mode="json")
 
     if state["mode"] == "generate":
         user_profile = state.get("user_profile") or {}
-        template_snapshot = state.get("template_snapshot") or {}
         if not user_profile:
             raise ValueError("Generate flow requires full stack user_profile in the request payload.")
-        if not template_snapshot:
-            raise ValueError("Generate flow requires full stack template snapshot in the request payload.")
+        bid_style_record = proposals_repo.get_bid_style(state["user_id"])
     else:
         if thread_record is None:
             raise ValueError(f"Thread '{state['thread_id']}' was not found.")
         user_profile = thread_record.get("user_profile_snapshot") or {}
-        template_snapshot = thread_record.get("template_snapshot") or {}
-        if not user_profile or not template_snapshot:
-            raise ValueError(
-                "Thread is missing stored full stack snapshot context. Regenerate the thread with user_profile and template."
-            )
-
-    template_id = template_snapshot.get("template_id")
-    template_text = template_snapshot.get("template_text", "")
+        if not user_profile:
+            raise ValueError("Thread is missing stored full stack user_profile context. Regenerate the thread with user_profile.")
+        bid_style_record = proposals_repo.get_bid_style(thread_record.get("user_id") or state["user_id"])
 
     updates: dict[str, Any] = {
         "user_profile": user_profile,
         "thread_record": thread_record,
-        "template_snapshot": template_snapshot,
-        "template_id": template_id,
-        "template_text": template_text,
+        "bid_examples_markdown": [bid.markdown for bid in bid_style_record.bids] if bid_style_record else [],
         "retrieval_attempt": 0,
         "retrieval_used": False,
         "retrieval_accepted": False,
@@ -540,7 +553,12 @@ def initialize_context(
 
     logger.info(
         "Initialized graph context",
-        extra={"thread_id": state["thread_id"], "mode": state["mode"], "next_node": next_node},
+        extra={
+            "thread_id": state["thread_id"],
+            "mode": state["mode"],
+            "next_node": next_node,
+            "bid_examples_count": len(updates["bid_examples_markdown"]),
+        },
     )
     return Command(update=updates, goto=next_node)
 
@@ -802,9 +820,9 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
             thread_id=state["thread_id"],
             job_details=state["job_details"],
             user_profile_snapshot=FullStackUserProfile.model_validate(state["user_profile"]),
-            template_snapshot=TemplateSnapshot.model_validate(state["template_snapshot"] or {}),
-            template_id=state["template_id"] or "",
-            template_text=state["template_text"],
+            template_snapshot=None,
+            template_id=None,
+            template_text=None,
             proposals=[ProposalOption.model_validate(item) for item in state.get("proposals", [])],
             selected_proposal_id=None,
             latest_response_type=ResponseType.PROPOSALS,
@@ -839,7 +857,6 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
         record = existing_thread.model_copy(
             update={
                 "user_profile_snapshot": existing_thread.user_profile_snapshot,
-                "template_snapshot": existing_thread.template_snapshot,
                 "proposals": updated_proposals,
                 "selected_proposal_id": state.get("selected_proposal_id") or existing_thread.selected_proposal_id,
                 "latest_response_type": ResponseType(state["response_type"]),
@@ -929,7 +946,6 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
             "user_id": payload["user_id"],
             "thread_id": payload["thread_id"],
             "user_profile": payload["user_profile"],
-            "template_snapshot": payload["template_snapshot"],
             "job_details": payload["job_details"],
             "messages": messages,
             "summary": summary,

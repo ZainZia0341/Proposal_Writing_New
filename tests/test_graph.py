@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from app.bid_examples import build_bid_style_record, format_bid_example_markdown
 from app.graph import run_generate_flow, run_optimize_flow
 from app.repositories import get_proposals_repository
 from app.schemas import (
+    BidExampleInput,
     ConversationMessage,
     FullStackUserProfile,
     JobDetails,
@@ -29,6 +31,17 @@ TEMPLATE_SNAPSHOT = TemplateSnapshot(
     template_id="custom-template-1",
     template_type=TemplateType.CUSTOM,
     template_text="Hi [Client Name], I saw your post for [Job Title]...",
+)
+
+BID_EXAMPLE = BidExampleInput(
+    job_details=JobDetails(
+        title="AI chatbot for education",
+        description="Need RAG and LLM workflow support.",
+        budget="$2,500",
+        skills_required=["Python", "LangChain", "Pinecone"],
+        client_info="EdTech startup",
+    ),
+    proposal_text="Hi, this aligns closely with my recent AI work and I can help quickly.",
 )
 
 
@@ -61,6 +74,20 @@ def _seed_thread(thread_id: str = "thread_001") -> ProposalThreadRecord:
         status=TaskStatus.COMPLETED,
     )
     return get_proposals_repository().upsert(record)
+
+
+def _seed_bid_style(user_id: str = "zain_zia_001"):
+    return get_proposals_repository().upsert_bid_style(build_bid_style_record(user_id, [BID_EXAMPLE]))
+
+
+def test_bid_example_markdown_formatting_is_stable():
+    markdown = format_bid_example_markdown(BID_EXAMPLE)
+    assert "## Job Title" in markdown
+    assert "AI chatbot for education" in markdown
+    assert "### Skills" in markdown
+    assert "Python, LangChain, Pinecone" in markdown
+    assert "## Sent Proposal" in markdown
+    assert BID_EXAMPLE.proposal_text in markdown
 
 
 def test_graph_routes_direct_answer(monkeypatch):
@@ -136,6 +163,7 @@ def test_graph_routes_retrieve_then_revise(monkeypatch):
 def test_graph_retries_then_accepts_retrieval(monkeypatch):
     import app.graph as graph
 
+    _seed_bid_style()
     monkeypatch.setattr(graph, "_plan_vector_query_with_llm", lambda state: f"query-{state.get('retrieval_attempt', 0) + 1}")
     monkeypatch.setattr(
         graph,
@@ -160,7 +188,6 @@ def test_graph_retries_then_accepts_retrieval(monkeypatch):
             "user_id": "zain_zia_001",
             "thread_id": "thread_retry",
             "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
-            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
             "job_details": JobDetails(
                 title="AI Developer",
                 description="Need a strong RAG engineer",
@@ -180,6 +207,7 @@ def test_graph_retries_then_accepts_retrieval(monkeypatch):
 def test_graph_propagates_model_used_into_generate_response(monkeypatch):
     import app.graph as graph
 
+    _seed_bid_style()
     monkeypatch.setattr(graph, "get_model_used", lambda: "groq:openai/gpt-oss-120b")
     monkeypatch.setattr(graph, "_plan_vector_query_with_llm", lambda state: "education ai story platform")
     monkeypatch.setattr(graph, "_verify_retrieval_with_llm", lambda state: {"accepted": True, "rationale": "Matched job context"})
@@ -199,7 +227,6 @@ def test_graph_propagates_model_used_into_generate_response(monkeypatch):
             "user_id": "zain_zia_001",
             "thread_id": "thread_model_used",
             "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
-            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
             "job_details": JobDetails(
                 title="AI Developer",
                 description="Need a strong RAG engineer",
@@ -215,6 +242,7 @@ def test_graph_propagates_model_used_into_generate_response(monkeypatch):
 def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
     import app.graph as graph
 
+    _seed_bid_style()
     monkeypatch.setattr(graph, "_plan_vector_query_with_llm", lambda state: "always-fail-query")
     monkeypatch.setattr(graph, "_verify_retrieval_with_llm", lambda state: {"accepted": False, "rationale": "No relevant docs"})
     monkeypatch.setattr(
@@ -232,7 +260,6 @@ def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
             "user_id": "zain_zia_001",
             "thread_id": "thread_fallback",
             "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
-            "template_snapshot": TEMPLATE_SNAPSHOT.model_dump(mode="json"),
             "job_details": JobDetails(
                 title="Backend AI Engineer",
                 description="Need a proposal without relevant history",
@@ -249,6 +276,80 @@ def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
         "Fallback LLM proposal 2",
         "Fallback LLM proposal 3",
     ]
+
+
+def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(monkeypatch):
+    import app.graph as graph
+
+    captured: dict[str, str] = {}
+
+    def fake_invoke_json(*, system_prompt, user_prompt, fallback):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return fallback
+
+    monkeypatch.setattr(graph, "invoke_json", fake_invoke_json)
+
+    graph._generate_proposals_with_llm(
+        {
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="AI Developer",
+                description="Need AI proposal help",
+                budget="$2,000",
+                skills_required=["Python"],
+                client_info="Startup",
+            ).model_dump(mode="json"),
+            "pinned_context": "Pinned job and user context",
+            "messages": [],
+            "retrieved_projects": [],
+            "bid_examples_markdown": [
+                "## Job Title\nAI job one\n\n## Sent Proposal\nProposal one",
+                "## Job Title\nBackend job two\n\n## Sent Proposal\nProposal two",
+            ],
+        }
+    )
+
+    assert "Previous Bid Example 1" in captured["user_prompt"]
+    assert "Previous Bid Example 2" in captured["user_prompt"]
+    assert "Proposal one" in captured["user_prompt"]
+    assert "Proposal two" in captured["user_prompt"]
+    assert "template" not in captured["system_prompt"].lower()
+
+
+def test_fallback_prompt_warns_against_copying_old_bid_facts(monkeypatch):
+    import app.graph as graph
+
+    captured: dict[str, str] = {}
+
+    def fake_invoke_json(*, system_prompt, user_prompt, fallback):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return fallback
+
+    monkeypatch.setattr(graph, "invoke_json", fake_invoke_json)
+
+    graph._generate_fallback_proposals_with_llm(
+        {
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="Full Stack Developer",
+                description="Need proposal help",
+                budget="$1,800",
+                skills_required=["Node.js"],
+                client_info="Agency",
+            ).model_dump(mode="json"),
+            "pinned_context": "Pinned job and user context",
+            "messages": [],
+            "retrieved_projects": [],
+            "bid_examples_markdown": [
+                "## Job Title\nOld client job\n\n## Sent Proposal\nOld proposal"
+            ],
+        }
+    )
+
+    assert "Previous Bid Example 1" in captured["user_prompt"]
+    assert "Never copy old client names" in captured["system_prompt"]
 
 
 def test_graph_summary_triggers_after_threshold(monkeypatch):

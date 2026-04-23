@@ -1,45 +1,51 @@
 # Full Stack <-> AI Dev Contract
 
-This document defines the recommended integration contract between the Full Stack side and the AI dev backend.
+This document defines the current integration contract between the Full Stack app and the AI proposal backend.
 
 ## Ownership
 
 - Full Stack owns:
   - auth
-  - user account records
-  - profile UI
-  - template selection UI
-  - Chrome extension flow
+  - signup/profile UI
   - the main users table
-- AI dev backend owns:
-  - Pinecone ingestion and retrieval
+  - Chrome extension flow
+  - saving user personal/profile data
+  - collecting previous bids from the product side
+- AI backend owns:
+  - Pinecone portfolio ingestion and retrieval
+  - bid-style example storage for proposal writing
   - proposal generation
   - proposal optimization
   - proposal thread persistence
   - task lifecycle persistence
 
 Important architecture note:
-- the AI dev backend does not expose a signup endpoint anymore
-- user signup, profile save, and user-table persistence happen on the Full Stack side
+
+- the AI backend does not expose signup
+- the AI backend does not fetch the Full Stack users table during generate or optimize
+- Full Stack sends a snapshot of `user_profile` on generate
+- Full Stack syncs previous bids separately through the bids endpoint
 
 ## Recommended Flow
 
-1. Full Stack stores user profile and template selection in its own users table.
-2. Full Stack fetches canonical built-in template ids plus full text from `GET /api/v1/templates`.
-3. If the user chooses a built-in template, Full Stack keeps that selected template snapshot on its side.
-4. Full Stack or Chrome extension calls `POST /api/v1/portfolio/sync` to upsert project history into Pinecone.
-5. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + template + job_details`.
-6. AI dev backend stores the Full Stack snapshot in `Users-Proposals` with the thread.
-7. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
+1. Full Stack stores the user profile in its own users table.
+2. Full Stack or the Chrome extension calls `POST /api/v1/portfolio/sync` to upsert projects into Pinecone.
+3. Full Stack calls `POST /api/v1/proposals/bids/sync` with up to 5 previous job + sent proposal pairs.
+4. AI backend cleans those bids into markdown and stores them in `Users-Proposals` under a user-style record.
+5. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details`.
+6. AI backend loads the stored previous bids, passes all of them together to the LLM, and lets the LLM infer the best hook/style for the current job.
+7. AI backend stores the generated proposal thread in `Users-Proposals`.
+8. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
 
 ## Main Endpoints
 
 ### `GET /api/v1/templates`
 
 Purpose:
-- give Full Stack the canonical built-in proposal templates
-- return both the template id and the full template text
-- avoid duplicating hard-coded template text in the Full Stack app
+
+- returns the canonical built-in templates
+- kept for product/UI use
+- no longer used by proposal prompting
 
 Response:
 
@@ -52,40 +58,27 @@ Response:
     "best_for": "AI, RAG, backend, AWS, and complex systems proposals.",
     "template_type": "provided",
     "body": "Hi, this aligns closely with my recent project..."
-  },
-  {
-    "template_id": "geeksvisor_classic",
-    "label": "GeeksVisor Classic",
-    "description": "Balanced and portfolio-led proposal for general SaaS and full-stack jobs.",
-    "best_for": "General full-stack, SaaS, and product-engineering proposals.",
-    "template_type": "provided",
-    "body": "Hi, this sounds like a perfect fit..."
   }
 ]
 ```
 
-How Full Stack should use this:
-- show the returned built-in templates in the UI
-- when the user selects one, keep:
-  - `template_id`
-  - `template_type`
-  - the returned `body`
-- when calling generate, map that `body` into `template.template_text`
-- this means Full Stack does not need to hard-code the three provided template texts separately
-
 Built-in template ids currently available:
+
 - `geeksvisor_classic`
 - `consultative_expert`
 - `the_fast_mover`
 
+Note:
+
+- this endpoint is still supported
+- template text is no longer part of the required `generate` contract
+
 ### `POST /api/v1/portfolio/sync`
 
 Purpose:
+
 - send AI-dev-relevant portfolio records for Pinecone upsert
-- can be called:
-  - at signup
-  - when Chrome extension finishes scraping
-  - when user refreshes portfolio later
+- can be called at signup, after Chrome extension scraping, or during later refresh
 
 Request:
 
@@ -108,6 +101,18 @@ Request:
 }
 ```
 
+Request field notes:
+
+- required:
+  - `user_id`
+- optional:
+  - `projects`
+  - `scraped_profile_text`
+  - `full_stack_metadata`
+- fields that can contain multiple values:
+  - `projects`
+  - `projects[].tech_stack`
+
 Response:
 
 ```json
@@ -120,29 +125,78 @@ Response:
 }
 ```
 
+### `POST /api/v1/proposals/bids/sync`
+
+Purpose:
+
+- send up to 5 previous job + sent proposal pairs
+- teach the AI backend the user's previous writing behavior, hooks, tone, and structure
+- replace the previously stored set for that user
+
+Request:
+
+```json
+{
+  "user_id": "user_123",
+  "bids": [
+    {
+      "job_details": {
+        "title": "AI chatbot for education",
+        "description": "Need RAG + LLM workflow...",
+        "budget": "$2500",
+        "required_skills": ["Python", "LangChain", "Pinecone"],
+        "client_info": "EdTech startup"
+      },
+      "proposal_text": "Hi, this aligns closely with my recent AI work..."
+    }
+  ]
+}
+```
+
 Request field notes:
+
 - required:
   - `user_id`
 - optional:
-  - `projects`
-  - `scraped_profile_text`
-  - `full_stack_metadata`
+  - `bids`
+- `bids` can be empty:
+  - `[]` means clear the stored examples for that user
+- max allowed bids:
+  - `5`
+- if Full Stack sends more than 5:
+  - API returns `422`
 - fields that can contain multiple values:
-  - `projects` is an array and can be empty
-  - inside each project, `tech_stack` can contain multiple values
-- `scraped_profile_text` is accepted for future AI/cleaning use and operational context; it is not currently required for proposal writing
-- each project item should include:
-  - `project_id`
-  - `title`
-  - `description`
-  - `role`
-  - `tech_stack`
+  - `bids`
+  - `bids[].job_details.required_skills`
+- accepted aliases inside `job_details`:
+  - `description` or `job_description`
+  - `required_skills` or `skills_required` or `skills`
+
+Response:
+
+```json
+{
+  "user_id": "user_123",
+  "stored_bids": 1,
+  "max_examples": 5,
+  "model_used": null
+}
+```
+
+Terminology note:
+
+- when your team says `bids`, the AI backend treats that as:
+  - previous job details
+  - plus the proposal/response the user actually sent for that job
 
 ### `POST /api/v1/proposals/generate`
 
 Purpose:
+
 - generate three proposal alternatives
-- store the Full Stack snapshot inside `Users-Proposals`
+- use current user profile + current job details + accepted retrieved projects
+- use all stored previous bids together as style examples
+- store the proposal thread in `Users-Proposals`
 
 Request:
 
@@ -157,11 +211,6 @@ Request:
     "experience_years": 5,
     "tone_preference": "upwork"
   },
-  "template": {
-    "template_id": "consultative_expert",
-    "template_type": "provided",
-    "template_text": "Hi, this aligns closely with my recent project..."
-  },
   "job_details": {
     "title": "Senior Node.js Developer for Fintech",
     "description": "We need an expert to build secure API gateways and handle financial transactions.",
@@ -172,20 +221,11 @@ Request:
 }
 ```
 
-Notes:
-- `thread_id` is optional. If not provided, AI dev backend creates one.
-- `job_details.description` can also be sent as `job_description`.
-- `job_details.required_skills` can also be sent as `skills_required` or `skills`.
-- for built-in templates, `template.template_text` should come from the selected `body` returned by `GET /api/v1/templates`
-- for custom or AI-generated templates, `template.template_text` should come from Full Stack storage
-- response includes `model_used`
-- if Groq rate-limits a request, the backend may switch that request to a Google Gemini fallback model and `model_used` will reflect that
-
 Request field notes:
+
 - required top-level fields:
   - `user_id`
   - `user_profile`
-  - `template`
   - `job_details`
 - optional top-level fields:
   - `thread_id`
@@ -198,13 +238,6 @@ Request field notes:
   - `experience_years`
   - `tone_preference`
   - `notes`
-- `template` required fields:
-  - `template_id`
-  - `template_type`
-  - `template_text`
-- `template` optional fields:
-  - `label`
-  - `description`
 - `job_details` required fields:
   - `title`
   - `description`
@@ -212,24 +245,26 @@ Request field notes:
   - `budget`
   - `required_skills`
   - `client_info`
+- accepted aliases inside `job_details`:
+  - `description` or `job_description`
+  - `required_skills` or `skills_required` or `skills`
 - fields that can contain multiple values:
   - `user_profile.expertise_areas`
   - `user_profile.experience_languages`
   - `job_details.required_skills`
 
-Allowed `template.template_type` values:
-- `provided`
-  - use this when the user selected one of the built-in templates returned by `GET /api/v1/templates`
-  - current built-in `template_id` values are:
-    - `geeksvisor_classic`
-    - `consultative_expert`
-    - `the_fast_mover`
-- `custom`
-  - use this when the user wrote or saved a custom template
-  - recommended `template_id` format: `custom-template-1`, `custom-template-2`, etc.
-- `ai_generated`
-  - use this when Full Stack created or saved a template generated by AI for that user
-  - recommended `template_id` format: `generated-template-1`, `generated-template-2`, etc.
+Compatibility note:
+
+- old clients that still send `template` are tolerated during rollout
+- the backend ignores that extra field
+- Full Stack should stop depending on template-driven prompting
+
+How style learning works:
+
+- the backend loads all stored bids for that user, up to 5
+- all examples are passed together in one prompt
+- the LLM decides which hook/style suits the current job best
+- the LLM must not copy old facts, client names, budgets, or unsupported skills into the new proposal
 
 Response:
 
@@ -266,9 +301,10 @@ Response:
 ### `POST /api/v1/proposals/optimize`
 
 Purpose:
+
 - optimize a selected proposal
 - answer direct questions from stored thread context
-- optionally rerun retriever if AI decides more project context is needed
+- optionally rerun retriever if the AI decides more project context is needed
 
 Request:
 
@@ -281,6 +317,7 @@ Request:
 ```
 
 Request field notes:
+
 - required:
   - `thread_id`
   - `selected_proposal_id`
@@ -291,9 +328,6 @@ Request field notes:
   - `alt_1`
   - `alt_2`
   - `alt_3`
-- recommended flow:
-  - Full Stack should send only `thread_id`, `selected_proposal_id`, and `feedback_msg`
-  - `user_id` is optional and can be sent only if Full Stack also wants extra ownership validation on the request
 
 Response when the AI returns a direct answer:
 
@@ -334,6 +368,7 @@ Response when the AI revises the proposal:
 ### `GET /api/v1/tasks/{task_id}`
 
 Purpose:
+
 - fetch task result or failure state
 
 Response:
@@ -351,7 +386,7 @@ Response:
 
 ## What Full Stack Should Store In Its Users Table
 
-The AI dev backend no longer needs to fetch this table during generate or optimize, but Full Stack should still keep these fields because they are the source of truth for the user snapshot it sends:
+The AI backend does not need to fetch this table directly, but Full Stack should keep these fields because they are the source of truth for the snapshot sent to generate:
 
 - `user_id`
 - `full_name`
@@ -360,53 +395,52 @@ The AI dev backend no longer needs to fetch this table during generate or optimi
 - `experience_languages`
 - `experience_years`
 - `tone_preference`
-- `template_id`
-- `template_type`
-- `template_text`
-
-For built-in templates:
-- `template_id` and `template_text` should be sourced from `GET /api/v1/templates`
-
-For custom templates:
-- Full Stack should store the final custom template text in its own users table and send that exact text in generate
 
 Useful optional fields:
 
 - `portfolio_last_synced_at`
+- `bids_last_synced_at`
 - `chrome_extension_connected`
 - `preferred_platform`
-- standard app fields such as:
+- standard app fields like:
   - `email`
   - `phoneNumber`
   - `username`
 
-## What Full Stack Sends To AI Dev For Pinecone Upsert
+## What Full Stack Sends To AI Backend
+
+For portfolio sync:
 
 - `user_id`
 - `projects`
 - optional `scraped_profile_text`
 
-That is enough for the AI dev backend to upsert project vectors into Pinecone using `user_id` as the namespace/filter.
+For bid sync:
 
-## What Full Stack Sends To AI Dev For Proposal Generation
+- `user_id`
+- `bids`
+
+For proposal generation:
 
 - `user_id`
 - `user_profile`
-- `template`
 - `job_details`
 
-Template payload rule:
-- `template.template_text` is always required in generate
-- if the template is built-in, Full Stack gets that text from `GET /api/v1/templates`
-- if the template is custom or AI-generated, Full Stack gets that text from its own stored user record
-- if `template.template_type = provided`, then `template.template_id` should be one of the built-in ids returned by `GET /api/v1/templates`
+For proposal optimization:
 
-## What AI Dev Backend Stores In `Users-Proposals`
+- `thread_id`
+- `selected_proposal_id`
+- `feedback_msg`
+
+## What AI Backend Stores In `Users-Proposals`
+
+This table now stores two record types.
+
+Proposal thread records store:
 
 - `thread_id`
 - `user_id`
 - `user_profile_snapshot`
-- `template_snapshot`
 - `job_details`
 - `proposals`
 - `selected_proposal_id`
@@ -415,7 +449,15 @@ Template payload rule:
 - `last_retriever_tool_message`
 - `latest_response_type`
 
-## What AI Dev Backend Stores In `Proposal-Tasks`
+User bid-style records store:
+
+- `thread_id = bids_profile#{user_id}`
+- `user_id`
+- `record_type = user_bid_style`
+- cleaned markdown bid examples
+- original structured bid examples
+
+## What AI Backend Stores In `Proposal-Tasks`
 
 - `task_id`
 - `thread_id`
@@ -425,12 +467,13 @@ Template payload rule:
 
 ## Notes For Full Stack
 
-- Full Stack should treat `user_profile` and `template` sent to generate as a snapshot of the current user state.
-- AI dev backend stores that snapshot with the thread so optimize does not need to ask Full Stack for the users table again.
-- built-in template ids and full text should be fetched from `GET /api/v1/templates`
-- Proposal ids are always:
+- `generate` no longer needs `template`.
+- `GET /api/v1/templates` is still available, but it is no longer part of proposal prompting.
+- proposal ids are always:
   - `alt_1`
   - `alt_2`
   - `alt_3`
-- If retriever does not find accepted evidence, the AI may still generate proposals using only confirmed user profile and job context.
-- AI dev backend is designed to avoid claiming unsupported skills or project details.
+- bid sync is replace-all:
+  - the newest sync overwrites the previously stored examples for that user
+- if no stored bids exist for a user, generation still works
+- the AI backend is designed to avoid claiming unsupported skills or project details

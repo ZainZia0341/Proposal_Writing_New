@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.repositories import get_proposals_repository
-from app.schemas import GenerateProposalRequest, OptimizeProposalRequest, PortfolioSyncRequest
+from app.schemas import BidSyncRequest, GenerateProposalRequest, OptimizeProposalRequest, PortfolioSyncRequest
 
 
 def _mock_three_proposals():
@@ -64,7 +64,7 @@ def test_generate_returns_three_proposals(client, load_payload, monkeypatch):
     stored = get_proposals_repository().get(body["thread_id"])
     assert stored is not None
     assert stored.user_profile_snapshot is not None
-    assert stored.template_snapshot is not None
+    assert stored.template_snapshot is None
     assert stored.user_profile_snapshot.full_name == payload["user_profile"]["full_name"]
 
 
@@ -78,6 +78,42 @@ def test_portfolio_sync_upserts_projects_for_ai_dev(client, load_payload):
     assert body["namespace"] == payload["user_id"]
     assert body["received_scraped_profile_text"] is True
     assert body["model_used"] is None
+
+
+def test_bid_sync_stores_markdown_examples(client, load_payload):
+    payload = load_payload("bids_sync.json")
+    response = client.post("/api/v1/proposals/bids/sync", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == payload["user_id"]
+    assert body["stored_bids"] == len(payload["bids"])
+    assert body["max_examples"] == 5
+    stored = get_proposals_repository().get_bid_style(payload["user_id"])
+    assert stored is not None
+    assert len(stored.bids) == len(payload["bids"])
+    assert "## Job Title" in stored.bids[0].markdown
+    assert "## Sent Proposal" in stored.bids[0].markdown
+
+
+def test_bid_sync_empty_payload_clears_stored_examples(client, load_payload):
+    payload = load_payload("bids_sync.json")
+    first_response = client.post("/api/v1/proposals/bids/sync", json=payload)
+    assert first_response.status_code == 200
+
+    clear_response = client.post("/api/v1/proposals/bids/sync", json={"user_id": payload["user_id"], "bids": []})
+    assert clear_response.status_code == 200
+    assert clear_response.json()["stored_bids"] == 0
+    assert get_proposals_repository().get_bid_style(payload["user_id"]) is None
+
+
+def test_bid_sync_rejects_more_than_five_examples(client, load_payload):
+    payload = load_payload("bids_sync.json")
+    example = payload["bids"][0]
+    response = client.post(
+        "/api/v1/proposals/bids/sync",
+        json={"user_id": payload["user_id"], "bids": [example, example, example, example, example, example]},
+    )
+    assert response.status_code == 422
 
 
 def test_portfolio_sync_returns_cleaner_error_when_vector_upsert_fails(client, load_payload, monkeypatch):
@@ -163,6 +199,19 @@ def test_generation_endpoint_creates_task_with_non_null_thread_id(client, load_p
     assert response.status_code == 200
     assert isinstance(captured["thread_id"], str)
     assert captured["thread_id"]
+
+
+def test_generate_tolerates_legacy_template_field(client, load_payload, monkeypatch):
+    _patch_successful_generation(monkeypatch)
+    payload = load_payload("generate_proposal.json")
+    payload["template"] = {
+        "template_id": "consultative_expert",
+        "template_type": "provided",
+        "template_text": "Legacy template payload from old frontend",
+    }
+    response = client.post("/api/v1/proposals/generate", json=payload)
+    assert response.status_code == 200
+    assert len(response.json()["proposals"]) == 3
 
 
 def test_optimize_direct_answer_path_returns_budget_without_rewriting(client, load_payload, monkeypatch):
@@ -279,6 +328,7 @@ def test_dual_mode_local_fallback_works_without_cloud(client, load_payload, monk
 
 def test_payload_files_match_request_models(load_payload):
     assert PortfolioSyncRequest.model_validate(load_payload("portfolio_sync.json"))
+    assert BidSyncRequest.model_validate(load_payload("bids_sync.json"))
     assert GenerateProposalRequest.model_validate(load_payload("generate_proposal.json"))
     aliased = GenerateProposalRequest.model_validate(load_payload("generate_proposal_job_description_alias.json"))
     assert aliased.job_details.description == "We need an expert to build secure API gateways and handle financial transactions."

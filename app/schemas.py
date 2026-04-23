@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+MAX_BID_STYLE_EXAMPLES = 5
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -171,6 +173,46 @@ class PortfolioSyncResponse(BaseModel):
     model_used: str | None = None
 
 
+class BidExampleInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    job_details: JobDetails
+    proposal_text: str
+
+    @field_validator("proposal_text")
+    @classmethod
+    def normalize_proposal_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("proposal_text must not be empty.")
+        return normalized
+
+
+class StoredBidExample(BidExampleInput):
+    markdown: str
+
+
+class BidSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    user_id: str
+    bids: list[BidExampleInput] = Field(default_factory=list)
+
+    @field_validator("bids")
+    @classmethod
+    def validate_bid_count(cls, value: list[BidExampleInput]) -> list[BidExampleInput]:
+        if len(value) > MAX_BID_STYLE_EXAMPLES:
+            raise ValueError(f"bids can contain at most {MAX_BID_STYLE_EXAMPLES} examples.")
+        return value
+
+
+class BidSyncResponse(BaseModel):
+    user_id: str
+    stored_bids: int
+    max_examples: int = MAX_BID_STYLE_EXAMPLES
+    model_used: str | None = None
+
+
 class ProposalOption(BaseModel):
     id: str
     label: str
@@ -194,8 +236,8 @@ class ProposalThreadRecord(BaseModel):
     job_details: JobDetails
     user_profile_snapshot: FullStackUserProfile | None = None
     template_snapshot: TemplateSnapshot | None = None
-    template_id: str
-    template_text: str
+    template_id: str | None = None
+    template_text: str | None = None
     proposals: list[ProposalOption] = Field(default_factory=list)
     selected_proposal_id: str | None = None
     latest_response_type: ResponseType = ResponseType.PROPOSALS
@@ -213,7 +255,6 @@ class GenerateProposalRequest(BaseModel):
     user_id: str
     thread_id: str | None = None
     user_profile: FullStackUserProfile
-    template: TemplateSnapshot
     job_details: JobDetails
     async_mode: bool = False
 
@@ -271,3 +312,14 @@ class TaskStatusResponse(BaseModel):
     result: dict[str, Any] | None = None
     error_message: str | None = None
     model_used: str | None = None
+
+
+class UserBidStyleRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thread_id: str
+    user_id: str
+    record_type: str = "user_bid_style"
+    bids: list[StoredBidExample] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)

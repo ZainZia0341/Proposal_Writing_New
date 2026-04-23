@@ -1,111 +1,42 @@
 # Proposal Writer API
 
-FastAPI backend for AI-assisted freelance proposal generation and proposal optimization.
+FastAPI backend for AI-assisted freelance proposal generation, proposal optimization, Pinecone portfolio retrieval, and user-specific writing-style learning from previous bids.
 
-This backend now follows the current architecture:
+## Current Architecture
 
-- Full Stack owns the user account table and user profile state
+- Full Stack owns:
+  - signup
+  - auth
+  - main users table
+  - profile UI/state
+  - Chrome extension flow
 - AI backend owns:
-  - built-in proposal templates
+  - built-in template catalog endpoint
   - Pinecone portfolio ingestion and retrieval
-  - proposal thread persistence
+  - previous bid storage for style learning
   - proposal generation and optimization
+  - proposal thread persistence
   - task lifecycle persistence
 
-## What Is Implemented
+Important note:
 
-### Runtime
+- proposal prompting is no longer template-driven
+- generation now learns style from up to 5 previous bids synced through the API
+- `GET /api/v1/templates` still exists for UI/product use, but template text is not used in prompt construction anymore
+
+## Runtime
 
 - Local runtime: `FastAPI + Uvicorn`
 - AWS runtime: `FastAPI + Mangum` through `app.main.handler`
 - Main ASGI app: `app.main:app`
 - Local helper launcher: `python main.py`
 
-### Built-in Templates
-
-- `GET /api/v1/templates`
-- Returns the canonical built-in templates including:
-  - `template_id`
-  - `label`
-  - `description`
-  - `best_for`
-  - `template_type`
-  - full template `body`
-- Full Stack should fetch templates from this endpoint instead of hard-coding them separately
-
-### Portfolio Sync
-
-- `POST /api/v1/portfolio/sync`
-- Used by Full Stack or the Chrome extension to upsert project history into Pinecone
-- Uses `user_id` as the namespace / user scope
-- Accepts empty `projects`
-- Reuses the same namespace safely for later refreshes
-- Works with Pinecone when configured, otherwise uses an in-memory fallback store
-
-### Proposal Generation
-
-- `POST /api/v1/proposals/generate`
-- Full Stack sends:
-  - `user_id`
-  - `user_profile`
-  - `template`
-  - `job_details`
-- The AI backend stores:
-  - `user_profile_snapshot`
-  - `template_snapshot`
-  - `job_details`
-  - generated alternatives
-  - retriever state
-  - rolling summary
-- The response includes `model_used` so the caller can see which model handled the request
-- Returns 3 indexed proposal alternatives:
-  - `alt_1`
-  - `alt_2`
-  - `alt_3`
-
-### Proposal Optimization
-
-- `POST /api/v1/proposals/optimize`
-- Full Stack sends only:
-  - `thread_id`
-  - `selected_proposal_id`
-  - `feedback_msg`
-- Optional:
-  - `user_id` for extra ownership validation
-- Loads everything else from the stored proposal thread snapshot
-- The response includes `model_used`
-
-### LangGraph Behavior
-
-- LLM-guided query planning
-- LLM-guided retrieval verification
-- LLM-guided optimization routing:
-  - direct answer
-  - revise only
-  - retrieve then revise
-- Rolling message summarization when thread history grows
-- Fallback proposal generation when retrieval never validates
-- If Groq returns a rate limit error during a request, the backend switches that request to Google Gemini fallback models
-
-### Observability
-
-- Structured logs to:
-  - stdout
-  - `logs/app.log`
-- Logs include:
-  - request start/end
-  - storage mode selection
-  - routing decisions
-  - retrieval retries
-  - summary creation
-  - fallback generation
-  - task lifecycle updates
-
 ## Main Endpoints
 
 - `GET /health`
 - `GET /api/v1/templates`
 - `POST /api/v1/portfolio/sync`
+- `POST /api/v1/proposals/bids/sync`
 - `POST /api/v1/proposals/generate`
 - `POST /api/v1/proposals/optimize`
 - `GET /api/v1/tasks/{task_id}`
@@ -115,11 +46,102 @@ Legacy compatibility routes are still present:
 - `POST /generate_proposal`
 - `POST /chat_proposal`
 
-Removed from AI backend:
+Removed from the AI backend:
 
 - `POST /api/v1/signup`
 
-Signup and user-profile persistence now belong to the Full Stack side.
+## What Is Implemented
+
+### Templates
+
+- `GET /api/v1/templates`
+- returns the canonical built-in templates including:
+  - `template_id`
+  - `label`
+  - `description`
+  - `best_for`
+  - `template_type`
+  - full template `body`
+- this endpoint is still useful for product/UI, but not for proposal prompting
+
+### Portfolio Sync
+
+- `POST /api/v1/portfolio/sync`
+- upserts projects into Pinecone under `user_id` namespace
+- accepts empty `projects`
+- safely reuses the same namespace for future refreshes
+- uses Pinecone when configured, otherwise falls back to the in-memory vector store
+
+### Bid Style Sync
+
+- `POST /api/v1/proposals/bids/sync`
+- Full Stack sends up to 5 previous job + sent proposal pairs
+- backend deterministically converts them into clean markdown
+- stores them in `Users-Proposals` under a dedicated synthetic key:
+  - `bids_profile#{user_id}`
+- the stored examples are later used as few-shot style references during generation
+
+### Proposal Generation
+
+- `POST /api/v1/proposals/generate`
+- Full Stack sends:
+  - `user_id`
+  - `user_profile`
+  - `job_details`
+- backend loads:
+  - stored previous bids for style learning
+  - accepted retrieved projects from Pinecone
+- backend stores:
+  - `user_profile_snapshot`
+  - `job_details`
+  - generated alternatives
+  - retriever state
+  - rolling summary
+- returns 3 indexed proposal alternatives:
+  - `alt_1`
+  - `alt_2`
+  - `alt_3`
+- response includes `model_used`
+
+### Proposal Optimization
+
+- `POST /api/v1/proposals/optimize`
+- Full Stack sends only:
+  - `thread_id`
+  - `selected_proposal_id`
+  - `feedback_msg`
+- optional:
+  - `user_id` for extra ownership validation
+- backend loads everything else from the stored thread snapshot
+- optimization routing remains LLM-driven:
+  - direct answer
+  - revise only
+  - retrieve then revise
+- response includes `model_used`
+
+### LangGraph Behavior
+
+- LLM-guided query planning
+- LLM-guided retrieval verification
+- LLM-guided optimization routing
+- rolling message summarization when thread history grows
+- fallback proposal generation when retrieval never validates
+- proposal generation uses all stored previous bids together in one prompt
+- if Groq rate-limits a request, the backend switches that request to Google Gemini fallback models
+
+### Observability
+
+- logs to:
+  - stdout
+  - `logs/app.log`
+- logs include:
+  - request start/end
+  - storage mode selection
+  - routing decisions
+  - retrieval retries
+  - summary creation
+  - fallback generation
+  - task lifecycle updates
 
 ## Local Run
 
@@ -148,6 +170,7 @@ http://127.0.0.1:8000/docs
 Used when DynamoDB / Pinecone config is missing.
 
 - proposal threads: in-memory repository
+- bid-style records: in-memory repository
 - tasks: in-memory repository
 - project retrieval: in-memory vector store seeded with demo projects
 
@@ -172,9 +195,9 @@ The stack creates these DynamoDB tables:
 
 ### DynamoDB Table Shapes
 
-`Users-Proposals` stores one proposal thread per workflow, keyed by `thread_id`.
+`Users-Proposals` stores two record types.
 
-Example item:
+Proposal thread item example:
 
 ```json
 {
@@ -188,11 +211,6 @@ Example item:
     "experience_years": 5,
     "tone_preference": "upwork"
   },
-  "template_snapshot": {
-    "template_id": "consultative_expert",
-    "template_type": "provided",
-    "template_text": "Hi, this aligns closely with my recent project..."
-  },
   "job_details": {
     "title": "Senior AI Developer for Children's Educational App",
     "description": "We are looking for a developer to build an interactive AI platform...",
@@ -200,8 +218,6 @@ Example item:
     "required_skills": ["Node.js", "Generative AI", "API Integration"],
     "client_info": "EdTech Startup in London"
   },
-  "template_id": "consultative_expert",
-  "template_text": "Hi, this aligns closely with my recent project...",
   "proposals": [
     { "id": "alt_1", "label": "Balanced", "text": "Proposal option 1..." },
     { "id": "alt_2", "label": "Consultative", "text": "Proposal option 2..." },
@@ -218,6 +234,29 @@ Example item:
     "rationale": "Relevant backend AI delivery evidence",
     "attempt": 2
   }
+}
+```
+
+Bid-style item example:
+
+```json
+{
+  "thread_id": "bids_profile#zain_zia_001",
+  "user_id": "zain_zia_001",
+  "record_type": "user_bid_style",
+  "bids": [
+    {
+      "job_details": {
+        "title": "AI chatbot for education",
+        "description": "Need RAG + LLM workflow...",
+        "budget": "$2500",
+        "required_skills": ["Python", "LangChain", "Pinecone"],
+        "client_info": "EdTech startup"
+      },
+      "proposal_text": "Hi, this aligns closely with my recent AI work...",
+      "markdown": "## Job Title\nAI chatbot for education\n..."
+    }
+  ]
 }
 ```
 
@@ -240,7 +279,7 @@ Example item:
 
 ## Full Stack Contract Summary
 
-Full Stack should already own and store:
+Full Stack should store in its own users table:
 
 - `user_id`
 - `full_name`
@@ -250,7 +289,6 @@ Full Stack should already own and store:
 - optional:
   - `experience_years`
   - `tone_preference`
-  - current template snapshot
 
 Full Stack should send to AI backend for portfolio sync:
 
@@ -258,11 +296,15 @@ Full Stack should send to AI backend for portfolio sync:
 - `projects`
 - optional `scraped_profile_text`
 
+Full Stack should send to AI backend for bid sync:
+
+- `user_id`
+- `bids`
+
 Full Stack should send to AI backend for proposal generation:
 
 - `user_id`
 - `user_profile`
-- `template`
 - `job_details`
 
 Full Stack should send to AI backend for proposal optimization:
@@ -303,6 +345,7 @@ Important settings:
 Payload files live under `test_payloads/`:
 
 - `portfolio_sync.json`
+- `bids_sync.json`
 - `generate_proposal.json`
 - `generate_proposal_job_description_alias.json`
 - `optimize_proposal_direct_answer.json`
@@ -325,17 +368,14 @@ Current automated coverage includes:
 
 - API endpoint tests with `FastAPI TestClient`
 - graph routing tests with mocked LLM decisions
+- bid-style sync and markdown formatting tests
 - payload parsing / schema validation tests
 - summary window behavior
 - retriever retry and fallback behavior
 
 ## Notes
 
-- The backend is local-friendly and does not require cloud services for development.
-- Tasks still execute inline for local and current Lambda use.
-- The task-status model is already in place for a future async worker.
-
-
-
-  ANY - https://ma27f4xhy4.execute-api.us-east-1.amazonaws.com/
-  ANY - https://ma27f4xhy4.execute-api.us-east-1.amazonaws.com/{proxy+}
+- the backend is local-friendly and does not require cloud services for development
+- tasks still execute inline for local and current Lambda use
+- old clients that still send `template` to generate are tolerated, but the backend ignores it
+- the task-status model is already in place for a future async worker
