@@ -4,37 +4,45 @@ import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
 from .config import settings
-from .graph import run_generate_flow, run_optimize_flow
+from .graph import run_bid_example_flow, run_generate_flow, run_optimize_flow
 from .logging_utils import configure_logging, get_logger
 from .repositories import repositories_mode
 from .schemas import (
+    BidExampleDraftRequest,
+    BidExampleDraftResponse,
     BidSyncRequest,
     BidSyncResponse,
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
     OptimizeProposalResponse,
+    PortfolioPdfParseResponse,
     PortfolioSyncRequest,
     PortfolioSyncResponse,
     TaskStatusResponse,
     TemplateRecord,
 )
 from .services import (
+    build_bid_example_task,
     build_generation_task,
     build_optimization_task,
     fail_task,
+    finalize_bid_example_result,
     finalize_generation_result,
     finalize_optimization_result,
     get_task_status,
     list_templates,
     mark_task_started,
+    parse_portfolio_pdf_for_ai_dev,
     sync_bid_examples_for_style_learning,
     sync_portfolio_for_ai_dev,
+    sync_structured_portfolio_for_ai_dev,
+    validate_bid_example_draft_request,
     validate_thread_ownership,
 )
 from .vector_store import project_store_mode
@@ -107,6 +115,32 @@ async def portfolio_sync_endpoint(request: PortfolioSyncRequest) -> PortfolioSyn
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post(f"{settings.api_prefix}/portfolio/pdf/parse", response_model=PortfolioPdfParseResponse)
+async def portfolio_pdf_parse_endpoint(
+    user_id: str = Form(...),
+    file: UploadFile = File(...),
+) -> PortfolioPdfParseResponse:
+    try:
+        content = await file.read()
+        return parse_portfolio_pdf_for_ai_dev(user_id=user_id, file_name=file.filename or "portfolio.pdf", content=content)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Portfolio PDF parse endpoint failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post(f"{settings.api_prefix}/portfolio/structured/sync", response_model=PortfolioSyncResponse)
+async def portfolio_structured_sync_endpoint(request: PortfolioSyncRequest) -> PortfolioSyncResponse:
+    try:
+        return sync_structured_portfolio_for_ai_dev(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Structured portfolio sync endpoint failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post(f"{settings.api_prefix}/proposals/bids/sync", response_model=BidSyncResponse)
 async def bids_sync_endpoint(request: BidSyncRequest) -> BidSyncResponse:
     try:
@@ -115,6 +149,38 @@ async def bids_sync_endpoint(request: BidSyncRequest) -> BidSyncResponse:
         raise
     except Exception as exc:
         logger.exception("Bid sync endpoint failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post(f"{settings.api_prefix}/proposals/bids/example", response_model=BidExampleDraftResponse)
+async def bid_example_endpoint(request: BidExampleDraftRequest) -> BidExampleDraftResponse:
+    thread_id = request.thread_id or str(uuid4())
+    task = build_bid_example_task(thread_id)
+    try:
+        validate_bid_example_draft_request(request)
+        mark_task_started(task.task_id, thread_id=thread_id)
+        response = run_bid_example_flow(
+            task.task_id,
+            {
+                "user_id": request.user_id,
+                "thread_id": thread_id,
+                "user_profile": request.user_profile.model_dump(mode="json") if request.user_profile else None,
+                "feedback_msg": request.feedback_msg,
+            },
+        )
+        return finalize_bid_example_result(task.task_id, response)
+    except HTTPException as exc:
+        fail_task(task.task_id, exc)
+        raise
+    except PermissionError as exc:
+        fail_task(task.task_id, exc)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        fail_task(task.task_id, exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Bid example endpoint failed")
+        fail_task(task.task_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

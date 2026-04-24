@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "/api/v1/portfolio/pdf/parse",
+  "content_type": "multipart/form-data",
+  "fields": {
+    "user_id": "zain_zia_001"
+  },
+  "files": {
+    "file": "Project_Details.pdf"
+  }
+}

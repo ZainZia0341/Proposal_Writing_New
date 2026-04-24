@@ -213,6 +213,26 @@ class BidSyncResponse(BaseModel):
     model_used: str | None = None
 
 
+class BidExampleDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    user_id: str
+    thread_id: str | None = None
+    user_profile: FullStackUserProfile | None = None
+    feedback_msg: str | None = None
+    async_mode: bool = False
+
+
+class BidExampleDraftResponse(BaseModel):
+    thread_id: str
+    task_id: str
+    status: TaskStatus
+    example_bid: StoredBidExample | None = None
+    direct_answer: str | None = None
+    summary: str | None = None
+    model_used: str | None = None
+
+
 class ProposalOption(BaseModel):
     id: str
     label: str
@@ -323,3 +343,29 @@ class UserBidStyleRecord(BaseModel):
     bids: list[StoredBidExample] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
+
+
+class BidExampleDraftRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thread_id: str
+    user_id: str
+    record_type: str = "bid_example_draft"
+    user_profile_snapshot: FullStackUserProfile
+    example_bid: StoredBidExample | None = None
+    messages: list[ConversationMessage] = Field(default_factory=list)
+    summary: str | None = None
+    status: TaskStatus = TaskStatus.COMPLETED
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class PortfolioPdfParseResponse(BaseModel):
+    user_id: str
+    projects: list[ProjectRecord] = Field(default_factory=list)
+    extracted_markdown: str = ""
+    model_used: str | None = None
+
+
+class StructuredPortfolioProjects(BaseModel):
+    projects: list[ProjectRecord] = Field(default_factory=list)

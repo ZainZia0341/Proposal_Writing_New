@@ -7,7 +7,7 @@ from typing import Protocol
 from .bid_examples import bid_style_thread_id
 from .config import settings
 from .logging_utils import get_logger
-from .schemas import ProposalThreadRecord, TaskRecord, TaskStatus, UserBidStyleRecord, utc_now
+from .schemas import BidExampleDraftRecord, ProposalThreadRecord, TaskRecord, TaskStatus, UserBidStyleRecord, utc_now
 
 logger = get_logger(__name__)
 
@@ -21,6 +21,10 @@ class ProposalsRepository(Protocol):
     def get(self, thread_id: str) -> ProposalThreadRecord | None: ...
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord: ...
+
+    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None: ...
+
+    def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord: ...
 
     def get_bid_style(self, user_id: str) -> UserBidStyleRecord | None: ...
 
@@ -41,6 +45,7 @@ class _InMemoryStore:
     proposals: dict[str, dict] = {}
     tasks: dict[str, dict] = {}
     bid_styles: dict[str, dict] = {}
+    bid_example_drafts: dict[str, dict] = {}
 
 
 class InMemoryProposalsRepository:
@@ -51,6 +56,15 @@ class InMemoryProposalsRepository:
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
         _InMemoryStore.proposals[payload.thread_id] = payload.model_dump(mode="json")
+        return payload
+
+    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None:
+        record = _InMemoryStore.bid_example_drafts.get(thread_id)
+        return BidExampleDraftRecord.model_validate(copy.deepcopy(record)) if record else None
+
+    def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord:
+        payload = record.model_copy(update={"updated_at": utc_now()})
+        _InMemoryStore.bid_example_drafts[payload.thread_id] = payload.model_dump(mode="json")
         return payload
 
     def get_bid_style(self, user_id: str) -> UserBidStyleRecord | None:
@@ -93,9 +107,23 @@ class DynamoProposalsRepository:
     def get(self, thread_id: str) -> ProposalThreadRecord | None:
         result = self.table.get_item(Key={"thread_id": thread_id})
         item = result.get("Item")
+        if item and item.get("record_type"):
+            return None
         return ProposalThreadRecord.model_validate(item) if item else None
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord:
+        payload = record.model_copy(update={"updated_at": utc_now()})
+        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
+        return payload
+
+    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None:
+        result = self.table.get_item(Key={"thread_id": thread_id})
+        item = result.get("Item")
+        if item and item.get("record_type") != "bid_example_draft":
+            return None
+        return BidExampleDraftRecord.model_validate(item) if item else None
+
+    def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
         self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
         return payload
@@ -171,5 +199,6 @@ def reset_in_memory_repositories() -> None:
     _InMemoryStore.proposals = {}
     _InMemoryStore.tasks = {}
     _InMemoryStore.bid_styles = {}
+    _InMemoryStore.bid_example_drafts = {}
     get_proposals_repository.cache_clear()
     get_tasks_repository.cache_clear()

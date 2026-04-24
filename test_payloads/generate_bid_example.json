@@ -1,0 +1,20 @@
+{
+  "user_id": "zain_zia_001",
+  "user_profile": {
+    "full_name": "Zain Zia",
+    "designation": "Generative AI Developer",
+    "expertise_areas": [
+      "LLMs",
+      "RAG systems",
+      "Vector Databases"
+    ],
+    "experience_languages": [
+      "Node.js",
+      "Python",
+      "React.js"
+    ],
+    "experience_years": 5,
+    "tone_preference": "upwork"
+  },
+  "feedback_msg": "Generate a concise Upwork-style example bid I can edit later."
+}

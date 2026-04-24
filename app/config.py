@@ -38,8 +38,10 @@ class Settings:
     llm_provider: str = os.getenv("LLM_PROVIDER", "groq").lower()
     google_api_key: str | None = os.getenv("GOOGLE_API_KEY")
     groq_api_key: str | None = os.getenv("GROQ_API_KEY")
+    mistral_api_key: str | None = os.getenv("MISTRAL_API_KEY")
     groq_model_name: str = os.getenv("GROQ_MODEL_NAME", "openai/gpt-oss-120b")
     google_model_name: str = os.getenv("GOOGLE_MODEL_NAME", "gemini-2.5-pro")
+    mistral_ocr_model: str = os.getenv("MISTRAL_OCR_MODEL", "mistral-ocr-latest")
     google_fallback_models: tuple[str, ...] = _as_csv(
         os.getenv("GOOGLE_FALLBACK_MODELS"),
         default=("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"),

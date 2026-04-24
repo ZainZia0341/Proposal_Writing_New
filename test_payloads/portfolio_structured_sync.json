@@ -1,0 +1,19 @@
+{
+  "user_id": "zain_zia_001",
+  "projects": [
+    {
+      "project_id": "pdf_p1",
+      "title": "StoryBloom - AI Storybook Generator",
+      "description": "Built an AI storybook generator with Node.js and Gemini APIs, including story generation and image consistency workflows.",
+      "tech_stack": [
+        "Node.js",
+        "Gemini",
+        "Serverless"
+      ],
+      "role": "Lead Generative AI Developer"
+    }
+  ],
+  "full_stack_metadata": {
+    "source": "pdf-import-reviewed"
+  }
+}

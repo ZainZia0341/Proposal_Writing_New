@@ -36,7 +36,10 @@ Important note:
 - `GET /health`
 - `GET /api/v1/templates`
 - `POST /api/v1/portfolio/sync`
+- `POST /api/v1/portfolio/pdf/parse`
+- `POST /api/v1/portfolio/structured/sync`
 - `POST /api/v1/proposals/bids/sync`
+- `POST /api/v1/proposals/bids/example`
 - `POST /api/v1/proposals/generate`
 - `POST /api/v1/proposals/optimize`
 - `GET /api/v1/tasks/{task_id}`
@@ -72,6 +75,15 @@ Removed from the AI backend:
 - safely reuses the same namespace for future refreshes
 - uses Pinecone when configured, otherwise falls back to the in-memory vector store
 
+### PDF Portfolio Import
+
+- `POST /api/v1/portfolio/pdf/parse`
+- accepts multipart `user_id` + PDF `file`
+- uses Mistral OCR/document annotation when configured
+- falls back to local PDF text extraction plus the existing LLM structured parser when Mistral fails
+- returns editable `projects` shaped like `ProjectRecord`
+- `POST /api/v1/portfolio/structured/sync` accepts the reviewed projects and reuses the existing portfolio sync path
+
 ### Bid Style Sync
 
 - `POST /api/v1/proposals/bids/sync`
@@ -80,6 +92,16 @@ Removed from the AI backend:
 - stores them in `Users-Proposals` under a dedicated synthetic key:
   - `bids_profile#{user_id}`
 - the stored examples are later used as few-shot style references during generation
+
+### Bid Example Drafts
+
+- `POST /api/v1/proposals/bids/example`
+- creates an editable example bid when `thread_id` is not provided
+- revises the stored example bid when `thread_id + feedback_msg` are provided
+- stores draft records separately from synced bid-style examples
+- uses LLM intent judgment, not keyword routing
+- unrelated requests return:
+  - `I can only generate an example bid i can not help you with that`
 
 ### Proposal Generation
 
@@ -325,6 +347,8 @@ Important settings:
 - `GOOGLE_API_KEY`
 - `GOOGLE_MODEL_NAME`
 - `GOOGLE_FALLBACK_MODELS`
+- `MISTRAL_API_KEY`
+- `MISTRAL_OCR_MODEL`
 - `USE_DYNAMODB`
 - `AWS_REGION`
 - `USERS_PROPOSALS_TABLE_NAME`
@@ -345,7 +369,12 @@ Important settings:
 Payload files live under `test_payloads/`:
 
 - `portfolio_sync.json`
+- `portfolio_structured_sync.json`
+- `portfolio_pdf_parse_form.json`
 - `bids_sync.json`
+- `generate_bid_example.json`
+- `update_bid_example.json`
+- `bid_example_unrelated_request.json`
 - `generate_proposal.json`
 - `generate_proposal_job_description_alias.json`
 - `optimize_proposal_direct_answer.json`

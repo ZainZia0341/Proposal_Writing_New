@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from .bid_examples import build_bid_style_record
+from .document_processing import parse_portfolio_pdf
 from .logging_utils import get_logger
 from .repositories import (
     get_proposals_repository,
@@ -10,12 +11,15 @@ from .repositories import (
     mark_task_processing,
 )
 from .schemas import (
+    BidExampleDraftRequest,
+    BidExampleDraftResponse,
     BidSyncRequest,
     BidSyncResponse,
     GenerateProposalRequest,
     GenerateProposalResponse,
     OptimizeProposalRequest,
     OptimizeProposalResponse,
+    PortfolioPdfParseResponse,
     PortfolioSyncRequest,
     PortfolioSyncResponse,
     ProposalThreadRecord,
@@ -84,6 +88,12 @@ def build_optimization_task(request: OptimizeProposalRequest) -> TaskRecord:
     return get_tasks_repository().create(task)
 
 
+def build_bid_example_task(thread_id: str) -> TaskRecord:
+    task = TaskRecord(thread_id=thread_id)
+    logger.info("Creating bid example task", extra={"thread_id": thread_id, "task_id": task.task_id})
+    return get_tasks_repository().create(task)
+
+
 def get_task_status(task_id: str) -> TaskStatusResponse:
     task = get_tasks_repository().get(task_id)
     if task is None:
@@ -115,6 +125,18 @@ def validate_thread_ownership(thread_id: str, user_id: str | None) -> ProposalTh
     return thread
 
 
+def validate_bid_example_draft_request(request: BidExampleDraftRequest) -> None:
+    if request.thread_id:
+        draft = get_proposals_repository().get_bid_example_draft(request.thread_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail=f"Bid example draft '{request.thread_id}' was not found.")
+        if draft.user_id != request.user_id:
+            raise HTTPException(status_code=403, detail="Bid example draft does not belong to the provided user_id.")
+        return
+    if request.user_profile is None:
+        raise HTTPException(status_code=422, detail="user_profile is required when thread_id is not provided.")
+
+
 def finalize_generation_result(task_id: str, response: GenerateProposalResponse) -> GenerateProposalResponse:
     logger.info("Finalizing generation task", extra={"task_id": task_id, "thread_id": response.thread_id})
     get_tasks_repository().update(
@@ -137,6 +159,39 @@ def finalize_optimization_result(task_id: str, response: OptimizeProposalRespons
         error_message=None,
     )
     return response
+
+
+def finalize_bid_example_result(task_id: str, response: BidExampleDraftResponse) -> BidExampleDraftResponse:
+    logger.info("Finalizing bid example task", extra={"task_id": task_id, "thread_id": response.thread_id})
+    get_tasks_repository().update(
+        task_id,
+        thread_id=response.thread_id,
+        status=TaskStatus.COMPLETED,
+        result=response.model_dump(mode="json"),
+        error_message=None,
+    )
+    return response
+
+
+def parse_portfolio_pdf_for_ai_dev(user_id: str, file_name: str, content: bytes) -> PortfolioPdfParseResponse:
+    if not file_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=422, detail="Only PDF files are supported for portfolio parsing.")
+    if not content:
+        raise HTTPException(status_code=422, detail="Uploaded PDF file is empty.")
+    try:
+        response = parse_portfolio_pdf(user_id=user_id, file_name=file_name, content=content)
+    except Exception as exc:
+        logger.exception("Portfolio PDF parse endpoint failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info(
+        "Portfolio PDF parsed into structured projects",
+        extra={"user_id": user_id, "projects": len(response.projects), "model_used": response.model_used},
+    )
+    return response
+
+
+def sync_structured_portfolio_for_ai_dev(request: PortfolioSyncRequest) -> PortfolioSyncResponse:
+    return sync_portfolio_for_ai_dev(request)
 
 
 def fail_task(task_id: str, error: Exception) -> None:

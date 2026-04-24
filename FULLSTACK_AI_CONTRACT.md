@@ -30,12 +30,14 @@ Important architecture note:
 
 1. Full Stack stores the user profile in its own users table.
 2. Full Stack or the Chrome extension calls `POST /api/v1/portfolio/sync` to upsert projects into Pinecone.
-3. Full Stack calls `POST /api/v1/proposals/bids/sync` with up to 5 previous job + sent proposal pairs.
-4. AI backend cleans those bids into markdown and stores them in `Users-Proposals` under a user-style record.
-5. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details`.
-6. AI backend loads the stored previous bids, passes all of them together to the LLM, and lets the LLM infer the best hook/style for the current job.
-7. AI backend stores the generated proposal thread in `Users-Proposals`.
-8. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
+3. Full Stack can call `POST /api/v1/portfolio/pdf/parse` to turn a portfolio PDF into editable structured projects, then `POST /api/v1/portfolio/structured/sync` after user review.
+4. Full Stack calls `POST /api/v1/proposals/bids/sync` with up to 5 previous job + sent proposal pairs.
+5. AI backend cleans those bids into markdown and stores them in `Users-Proposals` under a user-style record.
+6. Full Stack can call `POST /api/v1/proposals/bids/example` to generate or revise an editable sample bid draft.
+7. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details`.
+8. AI backend loads the stored previous bids, passes all of them together to the LLM, and lets the LLM infer the best hook/style for the current job.
+9. AI backend stores the generated proposal thread in `Users-Proposals`.
+10. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
 
 ## Main Endpoints
 
@@ -100,6 +102,52 @@ Request:
   }
 }
 ```
+
+### `POST /api/v1/portfolio/pdf/parse`
+
+Purpose:
+
+- upload a portfolio/project PDF
+- AI backend extracts text with Mistral OCR/document annotation when configured
+- backend returns editable project records for user review before syncing to Pinecone
+
+Request:
+
+```text
+multipart/form-data
+user_id=zain_zia_001
+file=@Project_Details.pdf
+```
+
+Response:
+
+```json
+{
+  "user_id": "zain_zia_001",
+  "projects": [
+    {
+      "project_id": "pdf_p1",
+      "title": "StoryBloom - AI Storybook Generator",
+      "description": "Built an AI storybook generator with Node.js and Gemini APIs.",
+      "tech_stack": ["Node.js", "Gemini", "Serverless"],
+      "role": "Lead Generative AI Developer"
+    }
+  ],
+  "extracted_markdown": "# Portfolio Projects...",
+  "model_used": "mistral:mistral-ocr-latest"
+}
+```
+
+### `POST /api/v1/portfolio/structured/sync`
+
+Purpose:
+
+- send reviewed/edited project records from the PDF preview flow
+- reuses the same storage and Pinecone behavior as `POST /api/v1/portfolio/sync`
+
+Request/response:
+
+- same JSON shape as `POST /api/v1/portfolio/sync`
 
 Request field notes:
 
@@ -188,6 +236,74 @@ Terminology note:
 - when your team says `bids`, the AI backend treats that as:
   - previous job details
   - plus the proposal/response the user actually sent for that job
+
+### `POST /api/v1/proposals/bids/example`
+
+Purpose:
+
+- generate an editable sample bid from user profile details
+- revise the same sample bid through later feedback using `thread_id`
+- keep generated drafts separate from the user's synced bid-style examples
+- refuse unrelated requests using LLM intent judgment
+
+Create request:
+
+```json
+{
+  "user_id": "user_123",
+  "user_profile": {
+    "full_name": "Zain Zia",
+    "designation": "Generative AI Developer",
+    "expertise_areas": ["LLMs", "RAG systems"],
+    "experience_languages": ["Node.js", "Python"],
+    "experience_years": 5,
+    "tone_preference": "upwork"
+  },
+  "feedback_msg": "Generate a concise Upwork-style example bid I can edit later."
+}
+```
+
+Revise request:
+
+```json
+{
+  "user_id": "user_123",
+  "thread_id": "bid-example-thread-id",
+  "feedback_msg": "Make it warmer and add a stronger question at the end."
+}
+```
+
+Response:
+
+```json
+{
+  "thread_id": "bid-example-thread-id",
+  "task_id": "task_123",
+  "status": "completed",
+  "example_bid": {
+    "job_details": {
+      "title": "AI Automation Developer",
+      "description": "Sample job description...",
+      "budget": "$2,000",
+      "required_skills": ["Python", "FastAPI"],
+      "client_info": "Sample SaaS client"
+    },
+    "proposal_text": "Hi, this sounds like a strong fit...",
+    "markdown": "## Job Title\n..."
+  },
+  "direct_answer": null,
+  "summary": null,
+  "model_used": "groq:openai/gpt-oss-120b"
+}
+```
+
+Unrelated request response:
+
+```json
+{
+  "direct_answer": "I can only generate an example bid i can not help you with that"
+}
+```
 
 ### `POST /api/v1/proposals/generate`
 
@@ -456,6 +572,15 @@ User bid-style records store:
 - `record_type = user_bid_style`
 - cleaned markdown bid examples
 - original structured bid examples
+
+Bid example draft records store:
+
+- `thread_id`
+- `user_id`
+- `record_type = bid_example_draft`
+- `user_profile_snapshot`
+- latest editable `example_bid`
+- messages and summary
 
 ## What AI Backend Stores In `Proposal-Tasks`
 

@@ -2,10 +2,15 @@
   "payload_files": [
     "test_payloads/portfolio_sync.json",
     "test_payloads/bids_sync.json",
+    "test_payloads/generate_bid_example.json",
+    "test_payloads/update_bid_example.json",
+    "test_payloads/bid_example_unrelated_request.json",
     "test_payloads/generate_proposal.json",
     "test_payloads/generate_proposal_job_description_alias.json",
     "test_payloads/optimize_proposal_direct_answer.json",
     "test_payloads/optimize_proposal_revise.json",
+    "test_payloads/portfolio_structured_sync.json",
+    "test_payloads/portfolio_pdf_parse_form.json",
     "test_payloads/task_status_example.json"
   ]
 }

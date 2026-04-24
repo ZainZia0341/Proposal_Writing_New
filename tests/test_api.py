@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.repositories import get_proposals_repository
-from app.schemas import BidSyncRequest, GenerateProposalRequest, OptimizeProposalRequest, PortfolioSyncRequest
+from app.schemas import BidExampleDraftRequest, BidSyncRequest, GenerateProposalRequest, OptimizeProposalRequest, PortfolioSyncRequest
 
 
 def _mock_three_proposals():
@@ -328,7 +328,11 @@ def test_dual_mode_local_fallback_works_without_cloud(client, load_payload, monk
 
 def test_payload_files_match_request_models(load_payload):
     assert PortfolioSyncRequest.model_validate(load_payload("portfolio_sync.json"))
+    assert PortfolioSyncRequest.model_validate(load_payload("portfolio_structured_sync.json"))
     assert BidSyncRequest.model_validate(load_payload("bids_sync.json"))
+    assert BidExampleDraftRequest.model_validate(load_payload("generate_bid_example.json"))
+    assert BidExampleDraftRequest.model_validate(load_payload("update_bid_example.json"))
+    assert BidExampleDraftRequest.model_validate(load_payload("bid_example_unrelated_request.json"))
     assert GenerateProposalRequest.model_validate(load_payload("generate_proposal.json"))
     aliased = GenerateProposalRequest.model_validate(load_payload("generate_proposal_job_description_alias.json"))
     assert aliased.job_details.description == "We need an expert to build secure API gateways and handle financial transactions."

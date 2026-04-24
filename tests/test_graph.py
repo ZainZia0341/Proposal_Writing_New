@@ -278,6 +278,69 @@ def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
     ]
 
 
+def test_fallback_generation_omits_empty_relevant_experience_section():
+    import app.graph as graph
+
+    proposals = graph._fallback_generation(
+        {
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="Senior Node.js Developer for Fintech",
+                description="Need secure API gateways and financial transactions.",
+                budget="$5,000",
+                skills_required=["Node.js", "AWS", "PostgreSQL"],
+                client_info="Fintech client",
+            ).model_dump(mode="json"),
+            "retrieved_projects": [],
+        }
+    )
+
+    assert len(proposals) == 3
+    joined = "\n\n".join(proposal.text for proposal in proposals)
+    assert "Relevant experience" not in joined
+    assert "Relevant portfolio examples available on request" not in joined
+    assert "portfolio examples" not in joined.lower()
+    assert "Senior Node.js Developer for Fintech" in joined
+    assert "Zain Zia" in joined
+
+
+def test_fallback_prompt_bans_empty_portfolio_placeholders(monkeypatch):
+    import app.graph as graph
+
+    captured: dict[str, str] = {}
+
+    def fake_invoke_json(*, system_prompt, user_prompt, fallback):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return fallback
+
+    monkeypatch.setattr(graph, "invoke_json", fake_invoke_json)
+
+    proposals = graph._generate_fallback_proposals_with_llm(
+        {
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="Backend AI Engineer",
+                description="Need proposal help without accepted retrieved projects",
+                budget="$1,500",
+                skills_required=["Python", "FastAPI"],
+                client_info="Solo founder",
+            ).model_dump(mode="json"),
+            "pinned_context": "Pinned job and user context",
+            "messages": [],
+            "retrieved_projects": [],
+            "bid_examples_markdown": [],
+        }
+    )
+
+    assert len(proposals) == 3
+    assert "Relevant portfolio examples available on request" in captured["system_prompt"]
+    assert "omit portfolio and relevant-experience sections entirely" in captured["system_prompt"]
+    joined = "\n\n".join(proposal.text for proposal in proposals)
+    assert "Relevant experience" not in joined
+    assert "Relevant portfolio examples available on request" not in joined
+
+
 def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(monkeypatch):
     import app.graph as graph
 

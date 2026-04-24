@@ -9,11 +9,15 @@ from langchain_core.messages.utils import count_tokens_approximately, trim_messa
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 
+from .bid_examples import format_bid_example_markdown
 from .config import settings
 from .llm import get_model_used, invoke_json, invoke_text, reset_llm_request_state
 from .logging_utils import get_logger
 from .repositories import get_proposals_repository
 from .schemas import (
+    BidExampleDraftRecord,
+    BidExampleDraftResponse,
+    BidExampleInput,
     ConversationMessage,
     FullStackUserProfile,
     GenerateProposalResponse,
@@ -23,11 +27,13 @@ from .schemas import (
     ProposalThreadRecord,
     ResponseType,
     RetrieverToolMessage,
+    StoredBidExample,
     TaskStatus,
 )
 from .vector_store import get_project_store
 
 logger = get_logger(__name__)
+BID_EXAMPLE_REFUSAL_TEXT = "I can only generate an example bid i can not help you with that"
 
 
 class ProposalState(MessagesState):
@@ -328,22 +334,30 @@ def _verify_retrieval_with_llm(state: ProposalState) -> dict[str, Any]:
 def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
     user = state["user_profile"]
     job = state["job_details"]
-    skills = ", ".join(job.get("required_skills", [])) or ", ".join(user.get("experience_languages", []))
+    supported_skills = user.get("experience_languages", [])
+    requested_skills = job.get("required_skills", [])
+    skills = ", ".join(supported_skills or requested_skills)
     project_lines = []
     for project in state.get("retrieved_projects", [])[:2]:
         project_lines.append(
             f"{project['title']} - {project['description']} ({', '.join(project.get('tech_stack', []))})"
         )
-    portfolio_section = "\n".join(project_lines) if project_lines else "Relevant portfolio examples available on request."
+    experience_section = f"Relevant experience:\n{chr(10).join(project_lines)}\n\n" if project_lines else ""
+    skills_sentence = f" with hands-on experience in {skills}" if supported_skills else ""
+    requested_skills_sentence = (
+        f" Your listed stack includes {', '.join(requested_skills)}, so I would keep the implementation aligned with those requirements."
+        if requested_skills
+        else ""
+    )
     variants = [
         ProposalOption(
             id="alt_1",
             label="Balanced",
             text=(
                 f"Hi, this sounds like a strong fit.\n\n"
-                f"I'm {user['full_name']}, a {user['designation']} with hands-on experience in {skills}. "
-                f"Your job around {job['title']} is closely aligned with the kind of systems I build.\n\n"
-                f"Relevant experience:\n{portfolio_section}\n\n"
+                f"I'm {user['full_name']}, a {user['designation']}{skills_sentence}. "
+                f"Your job around {job['title']} is the kind of work where a clear technical plan and careful delivery matter.{requested_skills_sentence}\n\n"
+                f"{experience_section}"
                 f"I can help you deliver this with a practical and reliable implementation. Would you like me to outline the execution plan?\n\n"
                 f"Best,\n{user['full_name']}"
             ),
@@ -352,10 +366,10 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
             id="alt_2",
             label="Consultative",
             text=(
-                f"Hi, this aligns closely with the type of work I've been doing recently.\n\n"
-                f"The challenge in {job['title']} is not only shipping features, but making sure the solution is maintainable and aligned with {skills}. "
-                f"I've handled similar delivery problems across AI and backend projects.\n\n"
-                f"Relevant experience:\n{portfolio_section}\n\n"
+                f"Hi, this aligns closely with the type of structured technical work I focus on.\n\n"
+                f"The challenge in {job['title']} is not only shipping features, but making sure the solution is maintainable and aligned with the requirements. "
+                f"I would start by clarifying the core workflow, integration points, and success criteria before implementation.{requested_skills_sentence}\n\n"
+                f"{experience_section}"
                 f"If helpful, I can break this into milestones and recommend a clean technical approach.\n\n"
                 f"Best,\n{user['full_name']}"
             ),
@@ -365,9 +379,8 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
             label="Fast Mover",
             text=(
                 f"I can definitely help here.\n\n"
-                f"I've built similar systems using {skills} and can move quickly on a project like {job['title']}. "
-                f"My background as a {user['designation']} helps me bridge product goals with clean implementation.\n\n"
-                f"Relevant experience:\n{portfolio_section}\n\n"
+                f"My background as a {user['designation']} helps me bridge product goals with clean implementation on a project like {job['title']}.{requested_skills_sentence}\n\n"
+                f"{experience_section}"
                 f"If you want, I can start with the highest-impact deliverable first and keep the scope tight.\n\n"
                 f"Best,\n{user['full_name']}"
             ),
@@ -418,6 +431,8 @@ def _generate_fallback_proposals_with_llm(state: ProposalState) -> list[Proposal
             "Use those examples only as style references. "
             "Use only the provided user profile, job details, and recent conversation as factual grounding. "
             "Do not mention any project name, project achievement, or project detail because retrieval did not produce accepted evidence. "
+            "Do not add empty experience headings, portfolio placeholders, or phrases like 'Relevant portfolio examples available on request'. "
+            "If there are no accepted retrieved projects, omit portfolio and relevant-experience sections entirely. "
             "Do not mention any skill, tool, framework, certification, or domain experience unless it is explicitly supported by the provided user profile. "
             "Do not let job-description keywords influence you into adding unsupported skills. "
             "Never copy old client names, job facts, budgets, or project claims from the previous bid examples. "
@@ -496,6 +511,167 @@ def _proposal_message_text(proposals: list[ProposalOption]) -> str:
 
 def _resolve_model_used(state: ProposalState) -> str | None:
     return get_model_used() or state.get("model_used")
+
+
+def _fallback_bid_example(user_profile: dict[str, Any], feedback_msg: str | None = None) -> StoredBidExample:
+    skills = user_profile.get("experience_languages") or user_profile.get("expertise_areas") or ["relevant technologies"]
+    skill_text = ", ".join(skills)
+    name = user_profile.get("full_name", "there")
+    designation = user_profile.get("designation", "Freelance Developer")
+    title = f"{designation} needed for a practical implementation project"
+    description = (
+        f"We need an experienced {designation} to help design and implement a reliable solution using {skill_text}. "
+        "The work includes understanding requirements, proposing a clean approach, and delivering maintainable results."
+    )
+    if feedback_msg:
+        description += f" The sample should reflect this preference: {feedback_msg}"
+    proposal_text = (
+        "Hi, this sounds like a strong fit.\n\n"
+        f"I'm {name}, a {designation} with hands-on experience in {skill_text}. "
+        "I can help turn your requirements into a clean, practical implementation while keeping the workflow easy to maintain.\n\n"
+        "I would start by clarifying the main success criteria, then break the work into focused milestones so you can review progress quickly.\n\n"
+        "Would you like me to share a short implementation plan for this?\n\n"
+        f"Best,\n{name}"
+    )
+    bid = BidExampleInput.model_validate(
+        {
+            "job_details": {
+                "title": title,
+                "description": description,
+                "budget": "To be discussed",
+                "required_skills": skills,
+                "client_info": "Sample client",
+            },
+            "proposal_text": proposal_text,
+        }
+    )
+    return StoredBidExample(
+        job_details=bid.job_details,
+        proposal_text=bid.proposal_text,
+        markdown=format_bid_example_markdown(bid),
+    )
+
+
+def _stored_bid_example_from_payload(payload: dict[str, Any]) -> StoredBidExample:
+    bid = BidExampleInput.model_validate(payload)
+    return StoredBidExample(
+        job_details=bid.job_details,
+        proposal_text=bid.proposal_text,
+        markdown=format_bid_example_markdown(bid),
+    )
+
+
+def _generate_bid_example_with_llm(
+    *,
+    user_profile: dict[str, Any],
+    feedback_msg: str | None,
+    existing_example_bid: dict[str, Any] | None = None,
+    recent_messages: list[BaseMessage] | None = None,
+) -> tuple[StoredBidExample | None, str | None]:
+    fallback_bid = _fallback_bid_example(user_profile, feedback_msg)
+    fallback = {
+        "is_bid_example_request": True,
+        "direct_answer": None,
+        "example_bid": fallback_bid.model_dump(mode="json"),
+    }
+    payload = invoke_json(
+        system_prompt=(
+            "You are an assistant that only creates or edits editable example freelance bids. "
+            "Return JSON with keys is_bid_example_request, direct_answer, and example_bid. "
+            "A bid example means a sample job description/details plus the proposal text the freelancer could send. "
+            "Use the user's profile, experience languages, expertise, tone preference, and feedback to create or revise the example. "
+            "If the user's request is not about generating or editing an example bid, set is_bid_example_request=false, "
+            f"set direct_answer exactly to: {BID_EXAMPLE_REFUSAL_TEXT}, and set example_bid=null. "
+            "Do not use keyword rules; judge the user's intent from the full request. "
+            "When returning example_bid, it must contain job_details and proposal_text. "
+            "Do not invent unsupported credentials, companies, client names, or project claims."
+        ),
+        user_prompt=json.dumps(
+            {
+                "user_profile": user_profile,
+                "feedback_msg": feedback_msg,
+                "existing_example_bid": existing_example_bid,
+                "recent_messages": _messages_to_text(recent_messages or []),
+            },
+            indent=2,
+        ),
+        fallback=fallback,
+    )
+    if not bool(payload.get("is_bid_example_request", True)):
+        return None, BID_EXAMPLE_REFUSAL_TEXT
+
+    example_payload = payload.get("example_bid") or fallback["example_bid"]
+    return _stored_bid_example_from_payload(example_payload), None
+
+
+def run_bid_example_flow(task_id: str, payload: dict[str, Any]) -> BidExampleDraftResponse:
+    reset_llm_request_state()
+    proposals_repo = get_proposals_repository()
+    thread_id = payload["thread_id"]
+    user_id = payload["user_id"]
+    existing = proposals_repo.get_bid_example_draft(thread_id)
+
+    if existing and existing.user_id != user_id:
+        raise PermissionError("Bid example draft does not belong to the provided user_id.")
+
+    if existing:
+        user_profile = existing.user_profile_snapshot.model_dump(mode="json")
+        messages = [_schema_to_langchain(message, index) for index, message in enumerate(existing.messages)]
+        summary = existing.summary
+        existing_example_bid = existing.example_bid.model_dump(mode="json") if existing.example_bid else None
+    else:
+        user_profile = payload.get("user_profile") or {}
+        if not user_profile:
+            raise ValueError("user_profile is required when creating a new bid example draft.")
+        messages = []
+        summary = None
+        existing_example_bid = None
+
+    feedback_msg = payload.get("feedback_msg")
+    user_message = feedback_msg or "Generate an editable example bid from this user profile."
+    messages.append(_human_message(user_message))
+
+    example_bid, direct_answer = _generate_bid_example_with_llm(
+        user_profile=user_profile,
+        feedback_msg=feedback_msg,
+        existing_example_bid=existing_example_bid,
+        recent_messages=messages,
+    )
+
+    response_text = direct_answer or (example_bid.markdown if example_bid else BID_EXAMPLE_REFUSAL_TEXT)
+    messages.append(_ai_message(response_text))
+    if len(messages) > settings.summary_trigger_messages:
+        older_messages = messages[:-settings.recent_messages_to_keep]
+        if older_messages:
+            summary = _summarize_messages(older_messages, summary)
+            messages = messages[-settings.recent_messages_to_keep :]
+
+    final_example_bid = example_bid or (existing.example_bid if existing else None)
+    if example_bid or existing:
+        record = BidExampleDraftRecord(
+            thread_id=thread_id,
+            user_id=user_id,
+            user_profile_snapshot=FullStackUserProfile.model_validate(user_profile),
+            example_bid=final_example_bid,
+            messages=_messages_to_schema(messages),
+            summary=summary,
+            status=TaskStatus.COMPLETED,
+        )
+        proposals_repo.upsert_bid_example_draft(record)
+
+    logger.info(
+        "Completed bid example draft flow",
+        extra={"thread_id": thread_id, "user_id": user_id, "refused": direct_answer is not None},
+    )
+    return BidExampleDraftResponse(
+        thread_id=thread_id,
+        task_id=task_id,
+        status=TaskStatus.COMPLETED,
+        example_bid=final_example_bid,
+        direct_answer=direct_answer,
+        summary=summary,
+        model_used=get_model_used(),
+    )
 
 
 def initialize_context(
