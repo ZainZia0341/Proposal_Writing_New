@@ -89,8 +89,9 @@ Removed from the AI backend:
 - `POST /api/v1/proposals/bids/sync`
 - Full Stack sends up to 5 previous job + sent proposal pairs
 - backend deterministically converts them into clean markdown
-- stores them in `Users-Proposals` under a dedicated synthetic key:
-  - `bids_profile#{user_id}`
+- stores them in DynamoDB under:
+  - `PK=USER#{user_id}`
+  - `SK=BID_STYLE`
 - the stored examples are later used as few-shot style references during generation
 
 ### Bid Example Drafts
@@ -128,12 +129,11 @@ Removed from the AI backend:
 ### Proposal Optimization
 
 - `POST /api/v1/proposals/optimize`
-- Full Stack sends only:
+- Full Stack sends:
+  - `user_id`
   - `thread_id`
   - `selected_proposal_id`
   - `feedback_msg`
-- optional:
-  - `user_id` for extra ownership validation
 - backend loads everything else from the stored thread snapshot
 - optimization routing remains LLM-driven:
   - direct answer
@@ -201,8 +201,7 @@ Used when DynamoDB / Pinecone config is missing.
 Used when configured.
 
 - DynamoDB for:
-  - `Users-Proposals`
-  - `Proposal-Tasks`
+  - `Proposal-Studio` single-table proposal/task state
 - Pinecone for project retrieval
 - Google embedding model: `gemini-embedding-001`
 
@@ -210,19 +209,22 @@ Used when configured.
 
 `serverless.yml` builds a Lambda container image and routes HTTP API requests to `app.main.handler`.
 
-The stack creates these DynamoDB tables:
+The stack creates this DynamoDB table:
 
-- `Users-Proposals`
-- `Proposal-Tasks`
+- `Proposal-Studio`
 
 ### DynamoDB Table Shapes
 
-`Users-Proposals` stores two record types.
+Detailed access-pattern notes live in [`DB_ACCESS_PATTERNS_SINGLE_TABLE.md`](DB_ACCESS_PATTERNS_SINGLE_TABLE.md).
+
+The single table stores proposal threads, bid style examples, bid example drafts, and task status items.
 
 Proposal thread item example:
 
 ```json
 {
+  "PK": "USER#zain_zia_001",
+  "SK": "THREAD#test_thread_555",
   "thread_id": "test_thread_555",
   "user_id": "zain_zia_001",
   "user_profile_snapshot": {
@@ -263,6 +265,8 @@ Bid-style item example:
 
 ```json
 {
+  "PK": "USER#zain_zia_001",
+  "SK": "BID_STYLE",
   "thread_id": "bids_profile#zain_zia_001",
   "user_id": "zain_zia_001",
   "record_type": "user_bid_style",
@@ -282,13 +286,16 @@ Bid-style item example:
 }
 ```
 
-`Proposal-Tasks` stores task lifecycle state, keyed by `task_id`.
-
-Example item:
+Task lifecycle item example:
 
 ```json
 {
+  "PK": "USER#zain_zia_001",
+  "SK": "TASK#task_123",
+  "GSI1PK": "TASK#task_123",
+  "GSI1SK": "USER#zain_zia_001",
   "task_id": "task_123",
+  "user_id": "zain_zia_001",
   "thread_id": "test_thread_555",
   "status": "completed",
   "result": {
@@ -331,6 +338,7 @@ Full Stack should send to AI backend for proposal generation:
 
 Full Stack should send to AI backend for proposal optimization:
 
+- `user_id`
 - `thread_id`
 - `selected_proposal_id`
 - `feedback_msg`
@@ -351,8 +359,7 @@ Important settings:
 - `MISTRAL_OCR_MODEL`
 - `USE_DYNAMODB`
 - `AWS_REGION`
-- `USERS_PROPOSALS_TABLE_NAME`
-- `TASKS_TABLE_NAME`
+- `SINGLE_TABLE_NAME`
 - `PINECONE_API_KEY`
 - `PINECONE_INDEX_NAME`
 - `RETRIEVAL_TOP_K`
@@ -380,6 +387,8 @@ Payload files live under `test_payloads/`:
 - `optimize_proposal_direct_answer.json`
 - `optimize_proposal_revise.json`
 - `task_status_example.json`
+- `task_status_completed_result.json`
+- `single_table_items.json`
 
 There is also a root index file:
 

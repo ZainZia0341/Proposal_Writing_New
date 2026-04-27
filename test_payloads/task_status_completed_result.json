@@ -1,0 +1,24 @@
+{
+  "task_id": "task_123",
+  "thread_id": "thread_123",
+  "status": "completed",
+  "result": {
+    "thread_id": "thread_123",
+    "task_id": "task_123",
+    "status": "completed",
+    "proposals": [
+      {
+        "id": "alt_1",
+        "label": "Balanced",
+        "text": "Proposal text..."
+      }
+    ],
+    "retrieval_used": true,
+    "fallback_used": false,
+    "retrieved_project_ids": ["project_1"],
+    "summary": null,
+    "model_used": null
+  },
+  "error_message": null,
+  "model_used": null
+}

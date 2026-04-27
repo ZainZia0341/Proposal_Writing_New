@@ -76,20 +76,20 @@ def sync_bid_examples_for_style_learning(request: BidSyncRequest) -> BidSyncResp
     return BidSyncResponse(user_id=request.user_id, stored_bids=len(stored.bids), model_used=None)
 
 
-def build_generation_task(thread_id: str) -> TaskRecord:
-    task = TaskRecord(thread_id=thread_id)
+def build_generation_task(user_id: str, thread_id: str) -> TaskRecord:
+    task = TaskRecord(user_id=user_id, thread_id=thread_id)
     logger.info("Creating generation task", extra={"thread_id": thread_id, "task_id": task.task_id})
     return get_tasks_repository().create(task)
 
 
 def build_optimization_task(request: OptimizeProposalRequest) -> TaskRecord:
-    task = TaskRecord(thread_id=request.thread_id)
+    task = TaskRecord(user_id=request.user_id, thread_id=request.thread_id)
     logger.info("Creating optimization task", extra={"thread_id": request.thread_id, "task_id": task.task_id})
     return get_tasks_repository().create(task)
 
 
-def build_bid_example_task(thread_id: str) -> TaskRecord:
-    task = TaskRecord(thread_id=thread_id)
+def build_bid_example_task(user_id: str, thread_id: str) -> TaskRecord:
+    task = TaskRecord(user_id=user_id, thread_id=thread_id)
     logger.info("Creating bid example task", extra={"thread_id": thread_id, "task_id": task.task_id})
     return get_tasks_repository().create(task)
 
@@ -111,27 +111,22 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
     )
 
 
-def get_thread_or_404(thread_id: str) -> ProposalThreadRecord:
-    thread = get_proposals_repository().get(thread_id)
+def get_thread_or_404(user_id: str, thread_id: str) -> ProposalThreadRecord:
+    thread = get_proposals_repository().get(user_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' was not found.")
     return thread
 
 
-def validate_thread_ownership(thread_id: str, user_id: str | None) -> ProposalThreadRecord:
-    thread = get_thread_or_404(thread_id)
-    if user_id is not None and thread.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Thread does not belong to the provided user_id.")
-    return thread
+def validate_thread_ownership(thread_id: str, user_id: str) -> ProposalThreadRecord:
+    return get_thread_or_404(user_id, thread_id)
 
 
 def validate_bid_example_draft_request(request: BidExampleDraftRequest) -> None:
     if request.thread_id:
-        draft = get_proposals_repository().get_bid_example_draft(request.thread_id)
+        draft = get_proposals_repository().get_bid_example_draft(request.user_id, request.thread_id)
         if draft is None:
             raise HTTPException(status_code=404, detail=f"Bid example draft '{request.thread_id}' was not found.")
-        if draft.user_id != request.user_id:
-            raise HTTPException(status_code=403, detail="Bid example draft does not belong to the provided user_id.")
         return
     if request.user_profile is None:
         raise HTTPException(status_code=422, detail="user_profile is required when thread_id is not provided.")

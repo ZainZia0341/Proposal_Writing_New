@@ -61,7 +61,7 @@ def test_generate_returns_three_proposals(client, load_payload, monkeypatch):
     assert [proposal["id"] for proposal in body["proposals"]] == ["alt_1", "alt_2", "alt_3"]
     assert "model_used" in body
     assert body["model_used"] is None
-    stored = get_proposals_repository().get(body["thread_id"])
+    stored = get_proposals_repository().get(payload["user_id"], body["thread_id"])
     assert stored is not None
     assert stored.user_profile_snapshot is not None
     assert stored.template_snapshot is None
@@ -168,7 +168,8 @@ def test_generation_endpoint_creates_task_with_non_null_thread_id(client, load_p
 
     captured: dict[str, object] = {}
 
-    def fake_build_generation_task(thread_id: str):
+    def fake_build_generation_task(user_id: str, thread_id: str):
+        captured["user_id"] = user_id
         captured["thread_id"] = thread_id
 
         class _Task:
@@ -197,6 +198,7 @@ def test_generation_endpoint_creates_task_with_non_null_thread_id(client, load_p
 
     response = client.post("/api/v1/proposals/generate", json=load_payload("generate_proposal.json"))
     assert response.status_code == 200
+    assert captured["user_id"] == load_payload("generate_proposal.json")["user_id"]
     assert isinstance(captured["thread_id"], str)
     assert captured["thread_id"]
 
@@ -218,9 +220,10 @@ def test_optimize_direct_answer_path_returns_budget_without_rewriting(client, lo
     import app.graph as graph
 
     _patch_successful_generation(monkeypatch)
-    generate_response = client.post("/api/v1/proposals/generate", json=load_payload("generate_proposal.json"))
+    generate_payload = load_payload("generate_proposal.json")
+    generate_response = client.post("/api/v1/proposals/generate", json=generate_payload)
     thread_id = generate_response.json()["thread_id"]
-    stored_before = get_proposals_repository().get(thread_id)
+    stored_before = get_proposals_repository().get(generate_payload["user_id"], thread_id)
     original_alt_1 = next(proposal.text for proposal in stored_before.proposals if proposal.id == "alt_1")
 
     monkeypatch.setattr(
@@ -238,7 +241,7 @@ def test_optimize_direct_answer_path_returns_budget_without_rewriting(client, lo
     assert "$3,000" in body["direct_answer"]
     assert body["model_used"] is None
 
-    stored_after = get_proposals_repository().get(thread_id)
+    stored_after = get_proposals_repository().get(generate_payload["user_id"], thread_id)
     updated_alt_1 = next(proposal.text for proposal in stored_after.proposals if proposal.id == "alt_1")
     assert updated_alt_1 == original_alt_1
 
@@ -247,7 +250,8 @@ def test_optimize_revision_updates_only_selected_proposal(client, load_payload, 
     import app.graph as graph
 
     _patch_successful_generation(monkeypatch)
-    generate_response = client.post("/api/v1/proposals/generate", json=load_payload("generate_proposal.json"))
+    generate_payload = load_payload("generate_proposal.json")
+    generate_response = client.post("/api/v1/proposals/generate", json=generate_payload)
     thread_id = generate_response.json()["thread_id"]
 
     monkeypatch.setattr(
@@ -266,7 +270,7 @@ def test_optimize_revision_updates_only_selected_proposal(client, load_payload, 
     assert body["updated_proposal"] == "Updated selected proposal"
     assert body["model_used"] is None
 
-    stored = get_proposals_repository().get(thread_id)
+    stored = get_proposals_repository().get(generate_payload["user_id"], thread_id)
     alt_1 = next(proposal.text for proposal in stored.proposals if proposal.id == "alt_1")
     alt_2 = next(proposal.text for proposal in stored.proposals if proposal.id == "alt_2")
     assert alt_1 == "Balanced proposal"
@@ -280,9 +284,28 @@ def test_task_status_endpoint_returns_completed_result(client, load_payload, mon
 
     response = client.get(f"/api/v1/tasks/{task_id}")
     assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    assert "model_used" in response.json()
-    assert response.json()["model_used"] is None
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["thread_id"] == generate_response.json()["thread_id"]
+    assert body["result"]["task_id"] == task_id
+    assert len(body["result"]["proposals"]) == 3
+    assert "model_used" in body
+    assert body["model_used"] is None
+
+
+def test_optimize_requires_user_id_and_reads_thread_under_that_user(client, load_payload, monkeypatch):
+    _patch_successful_generation(monkeypatch)
+    generate_payload = load_payload("generate_proposal.json")
+    generate_response = client.post("/api/v1/proposals/generate", json=generate_payload)
+    thread_id = generate_response.json()["thread_id"]
+
+    payload = load_payload("optimize_proposal_revise.json")
+    payload["thread_id"] = thread_id
+    payload["user_id"] = "different_user"
+    response = client.post("/api/v1/proposals/optimize", json=payload)
+
+    assert response.status_code == 404
+    assert "was not found" in response.json()["detail"]
 
 
 def test_legacy_generate_route_maps_to_generate_endpoint(client, load_payload, monkeypatch):

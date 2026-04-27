@@ -389,6 +389,13 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
     return variants
 
 
+def _normalize_proposal_ids(proposals: list[ProposalOption]) -> list[ProposalOption]:
+    normalized: list[ProposalOption] = []
+    for index, proposal in enumerate(proposals[:3], start=1):
+        normalized.append(proposal.model_copy(update={"id": f"alt_{index}"}))
+    return normalized
+
+
 def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
     fallback = {"alternatives": [proposal.model_dump(mode="json") for proposal in _fallback_generation(state)]}
     projects_text = "\n\n".join(_format_project(project) for project in state.get("retrieved_projects", []))
@@ -416,7 +423,8 @@ def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
         ),
         fallback=fallback,
     )
-    return [ProposalOption.model_validate(item) for item in payload.get("alternatives", fallback["alternatives"])[:3]]
+    proposals = [ProposalOption.model_validate(item) for item in payload.get("alternatives", fallback["alternatives"])[:3]]
+    return _normalize_proposal_ids(proposals)
 
 
 def _generate_fallback_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
@@ -449,7 +457,8 @@ def _generate_fallback_proposals_with_llm(state: ProposalState) -> list[Proposal
         ),
         fallback=fallback,
     )
-    return [ProposalOption.model_validate(item) for item in payload.get("alternatives", fallback["alternatives"])[:3]]
+    proposals = [ProposalOption.model_validate(item) for item in payload.get("alternatives", fallback["alternatives"])[:3]]
+    return _normalize_proposal_ids(proposals)
 
 
 def _revise_proposal_with_llm(state: ProposalState, base_text: str) -> str:
@@ -609,10 +618,7 @@ def run_bid_example_flow(task_id: str, payload: dict[str, Any]) -> BidExampleDra
     proposals_repo = get_proposals_repository()
     thread_id = payload["thread_id"]
     user_id = payload["user_id"]
-    existing = proposals_repo.get_bid_example_draft(thread_id)
-
-    if existing and existing.user_id != user_id:
-        raise PermissionError("Bid example draft does not belong to the provided user_id.")
+    existing = proposals_repo.get_bid_example_draft(user_id, thread_id)
 
     if existing:
         user_profile = existing.user_profile_snapshot.model_dump(mode="json")
@@ -681,7 +687,7 @@ def initialize_context(
     proposals_repo = get_proposals_repository()
     thread_record = None
     if state.get("thread_id"):
-        existing = proposals_repo.get(state["thread_id"])
+        existing = proposals_repo.get(state["user_id"], state["thread_id"])
         if existing:
             thread_record = existing.model_dump(mode="json")
 
@@ -987,7 +993,7 @@ def finalize_memory_window(state: ProposalState) -> Command[Literal["persist_res
 def persist_result(state: ProposalState) -> dict[str, Any]:
     _debug_node_start("persist_result", state)
     proposals_repo = get_proposals_repository()
-    existing_thread = proposals_repo.get(state["thread_id"])
+    existing_thread = proposals_repo.get(state["user_id"], state["thread_id"])
     stored_messages = _messages_to_schema(state["messages"])
 
     if state["response_type"] == ResponseType.PROPOSALS.value:
@@ -1099,9 +1105,7 @@ proposal_graph = builder.compile()
 
 def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposalResponse:
     reset_llm_request_state()
-    existing_thread = get_proposals_repository().get(payload["thread_id"])
-    if existing_thread and existing_thread.user_id != payload["user_id"]:
-        raise ValueError(f"Thread '{payload['thread_id']}' does not belong to user '{payload['user_id']}'.")
+    existing_thread = get_proposals_repository().get(payload["user_id"], payload["thread_id"])
 
     messages = []
     summary = None
@@ -1142,7 +1146,7 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
 
 def run_optimize_flow(task_id: str, payload: dict[str, Any]) -> OptimizeProposalResponse:
     reset_llm_request_state()
-    thread = get_proposals_repository().get(payload["thread_id"])
+    thread = get_proposals_repository().get(payload["user_id"], payload["thread_id"])
     if thread is None:
         raise ValueError(f"Thread '{payload['thread_id']}' was not found.")
 
@@ -1153,7 +1157,7 @@ def run_optimize_flow(task_id: str, payload: dict[str, Any]) -> OptimizeProposal
         {
             "mode": "optimize",
             "task_id": task_id,
-            "user_id": thread.user_id,
+            "user_id": payload["user_id"],
             "thread_id": thread.thread_id,
             "job_details": thread.job_details.model_dump(mode="json"),
             "selected_proposal_id": payload["selected_proposal_id"],

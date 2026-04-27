@@ -32,12 +32,12 @@ Important architecture note:
 2. Full Stack or the Chrome extension calls `POST /api/v1/portfolio/sync` to upsert projects into Pinecone.
 3. Full Stack can call `POST /api/v1/portfolio/pdf/parse` to turn a portfolio PDF into editable structured projects, then `POST /api/v1/portfolio/structured/sync` after user review.
 4. Full Stack calls `POST /api/v1/proposals/bids/sync` with up to 5 previous job + sent proposal pairs.
-5. AI backend cleans those bids into markdown and stores them in `Users-Proposals` under a user-style record.
+5. AI backend cleans those bids into markdown and stores them in the single DynamoDB table under `USER#{user_id} / BID_STYLE`.
 6. Full Stack can call `POST /api/v1/proposals/bids/example` to generate or revise an editable sample bid draft.
 7. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details`.
 8. AI backend loads the stored previous bids, passes all of them together to the LLM, and lets the LLM infer the best hook/style for the current job.
-9. AI backend stores the generated proposal thread in `Users-Proposals`.
-10. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
+9. AI backend stores the generated proposal thread in the single DynamoDB table under `USER#{user_id} / THREAD#{thread_id}`.
+10. Full Stack calls `POST /api/v1/proposals/optimize` with `user_id + thread_id + selected_proposal_id + feedback_msg`.
 
 ## Main Endpoints
 
@@ -312,7 +312,7 @@ Purpose:
 - generate three proposal alternatives
 - use current user profile + current job details + accepted retrieved projects
 - use all stored previous bids together as style examples
-- store the proposal thread in `Users-Proposals`
+- store the proposal thread in the single DynamoDB table
 
 Request:
 
@@ -426,6 +426,7 @@ Request:
 
 ```json
 {
+  "user_id": "zain_zia_001",
   "thread_id": "uuid-789-101",
   "selected_proposal_id": "alt_2",
   "feedback_msg": "Make this shorter and justify the budget better."
@@ -435,11 +436,10 @@ Request:
 Request field notes:
 
 - required:
+  - `user_id`
   - `thread_id`
   - `selected_proposal_id`
   - `feedback_msg`
-- optional:
-  - `user_id`
 - allowed `selected_proposal_id` values:
   - `alt_1`
   - `alt_2`
@@ -544,16 +544,19 @@ For proposal generation:
 
 For proposal optimization:
 
+- `user_id`
 - `thread_id`
 - `selected_proposal_id`
 - `feedback_msg`
 
-## What AI Backend Stores In `Users-Proposals`
+## What AI Backend Stores In DynamoDB
 
-This table now stores two record types.
+The AI backend uses one single table. See `DB_ACCESS_PATTERNS_SINGLE_TABLE.md` for sheet-ready access patterns.
 
 Proposal thread records store:
 
+- `PK = USER#{user_id}`
+- `SK = THREAD#{thread_id}`
 - `thread_id`
 - `user_id`
 - `user_profile_snapshot`
@@ -567,6 +570,8 @@ Proposal thread records store:
 
 User bid-style records store:
 
+- `PK = USER#{user_id}`
+- `SK = BID_STYLE`
 - `thread_id = bids_profile#{user_id}`
 - `user_id`
 - `record_type = user_bid_style`
@@ -575,6 +580,8 @@ User bid-style records store:
 
 Bid example draft records store:
 
+- `PK = USER#{user_id}`
+- `SK = BID_EXAMPLE_DRAFT#{thread_id}`
 - `thread_id`
 - `user_id`
 - `record_type = bid_example_draft`
@@ -582,9 +589,14 @@ Bid example draft records store:
 - latest editable `example_bid`
 - messages and summary
 
-## What AI Backend Stores In `Proposal-Tasks`
+Task records store:
 
+- `PK = USER#{user_id}`
+- `SK = TASK#{task_id}`
+- `GSI1PK = TASK#{task_id}`
+- `GSI1SK = USER#{user_id}`
 - `task_id`
+- `user_id`
 - `thread_id`
 - `status`
 - `result`

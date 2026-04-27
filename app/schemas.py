@@ -294,10 +294,10 @@ class GenerateProposalResponse(BaseModel):
 class OptimizeProposalRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    user_id: str
     thread_id: str
     selected_proposal_id: str
     feedback_msg: str
-    user_id: str | None = None
     async_mode: bool = False
 
 
@@ -317,6 +317,7 @@ class OptimizeProposalResponse(BaseModel):
 
 class TaskRecord(BaseModel):
     task_id: str = Field(default_factory=lambda: f"task_{uuid4()}")
+    user_id: str
     thread_id: str | None = None
     status: TaskStatus = TaskStatus.PENDING
     result: dict[str, Any] | None = None

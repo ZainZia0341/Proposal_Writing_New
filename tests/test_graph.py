@@ -102,6 +102,7 @@ def test_graph_routes_direct_answer(monkeypatch):
     response = run_optimize_flow(
         "task_direct",
         {
+            "user_id": "zain_zia_001",
             "thread_id": "thread_001",
             "selected_proposal_id": "alt_2",
             "feedback_msg": "What is the budget?",
@@ -125,6 +126,7 @@ def test_graph_routes_revise_only(monkeypatch):
     response = run_optimize_flow(
         "task_revise",
         {
+            "user_id": "zain_zia_001",
             "thread_id": "thread_revise",
             "selected_proposal_id": "alt_2",
             "feedback_msg": "Make it shorter.",
@@ -150,6 +152,7 @@ def test_graph_routes_retrieve_then_revise(monkeypatch):
     response = run_optimize_flow(
         "task_retrieve",
         {
+            "user_id": "zain_zia_001",
             "thread_id": "thread_retrieve",
             "selected_proposal_id": "alt_2",
             "feedback_msg": "Justify the budget using my AWS experience.",
@@ -198,7 +201,7 @@ def test_graph_retries_then_accepts_retrieval(monkeypatch):
         },
     )
     assert response.fallback_used is False
-    stored = get_proposals_repository().get("thread_retry")
+    stored = get_proposals_repository().get("zain_zia_001", "thread_retry")
     assert stored is not None
     assert stored.last_retriever_tool_message is not None
     assert stored.last_retriever_tool_message.attempt == 2
@@ -380,6 +383,41 @@ def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(mo
     assert "template" not in captured["system_prompt"].lower()
 
 
+def test_generate_proposals_normalizes_llm_proposal_ids(monkeypatch):
+    import app.graph as graph
+
+    monkeypatch.setattr(
+        graph,
+        "invoke_json",
+        lambda *, system_prompt, user_prompt, fallback: {
+            "alternatives": [
+                {"id": "draft_a", "label": "One", "text": "Proposal one"},
+                {"id": "draft_b", "label": "Two", "text": "Proposal two"},
+                {"id": "draft_c", "label": "Three", "text": "Proposal three"},
+            ]
+        },
+    )
+
+    proposals = graph._generate_proposals_with_llm(
+        {
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="AI Developer",
+                description="Need AI proposal help",
+                budget="$2,000",
+                skills_required=["Python"],
+                client_info="Startup",
+            ).model_dump(mode="json"),
+            "pinned_context": "Pinned job and user context",
+            "messages": [],
+            "retrieved_projects": [],
+            "bid_examples_markdown": [],
+        }
+    )
+
+    assert [proposal.id for proposal in proposals] == ["alt_1", "alt_2", "alt_3"]
+
+
 def test_fallback_prompt_warns_against_copying_old_bid_facts(monkeypatch):
     import app.graph as graph
 
@@ -458,13 +496,14 @@ def test_graph_summary_triggers_after_threshold(monkeypatch):
     response = run_optimize_flow(
         "task_summary",
         {
+            "user_id": "zain_zia_001",
             "thread_id": "thread_summary",
             "selected_proposal_id": "alt_1",
             "feedback_msg": "What was the budget?",
         },
     )
     assert response.response_type == ResponseType.DIRECT_ANSWER
-    stored = get_proposals_repository().get("thread_summary")
+    stored = get_proposals_repository().get("zain_zia_001", "thread_summary")
     assert stored is not None
     assert stored.summary == "rolled up summary"
     assert len(stored.messages) <= 10

@@ -11,6 +11,8 @@
     "test_payloads/optimize_proposal_revise.json",
     "test_payloads/portfolio_structured_sync.json",
     "test_payloads/portfolio_pdf_parse_form.json",
-    "test_payloads/task_status_example.json"
+    "test_payloads/task_status_example.json",
+    "test_payloads/task_status_completed_result.json",
+    "test_payloads/single_table_items.json"
   ]
 }

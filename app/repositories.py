@@ -4,7 +4,6 @@ import copy
 from functools import lru_cache
 from typing import Protocol
 
-from .bid_examples import bid_style_thread_id
 from .config import settings
 from .logging_utils import get_logger
 from .schemas import BidExampleDraftRecord, ProposalThreadRecord, TaskRecord, TaskStatus, UserBidStyleRecord, utc_now
@@ -13,16 +12,37 @@ logger = get_logger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import boto3
+    from boto3.dynamodb.conditions import Key as DynamoKey
 except ImportError:  # pragma: no cover - optional dependency
     boto3 = None
+    DynamoKey = None
+
+
+def user_pk(user_id: str) -> str:
+    return f"USER#{user_id}"
+
+
+def proposal_thread_sk(thread_id: str) -> str:
+    return f"THREAD#{thread_id}"
+
+
+def bid_example_draft_sk(thread_id: str) -> str:
+    return f"BID_EXAMPLE_DRAFT#{thread_id}"
+
+
+def task_sk(task_id: str) -> str:
+    return f"TASK#{task_id}"
+
+
+BID_STYLE_SK = "BID_STYLE"
 
 
 class ProposalsRepository(Protocol):
-    def get(self, thread_id: str) -> ProposalThreadRecord | None: ...
+    def get(self, user_id: str, thread_id: str) -> ProposalThreadRecord | None: ...
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord: ...
 
-    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None: ...
+    def get_bid_example_draft(self, user_id: str, thread_id: str) -> BidExampleDraftRecord | None: ...
 
     def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord: ...
 
@@ -49,35 +69,35 @@ class _InMemoryStore:
 
 
 class InMemoryProposalsRepository:
-    def get(self, thread_id: str) -> ProposalThreadRecord | None:
-        record = _InMemoryStore.proposals.get(thread_id)
+    def get(self, user_id: str, thread_id: str) -> ProposalThreadRecord | None:
+        record = _InMemoryStore.proposals.get(f"{user_id}:{thread_id}")
         return ProposalThreadRecord.model_validate(copy.deepcopy(record)) if record else None
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        _InMemoryStore.proposals[payload.thread_id] = payload.model_dump(mode="json")
+        _InMemoryStore.proposals[f"{payload.user_id}:{payload.thread_id}"] = payload.model_dump(mode="json")
         return payload
 
-    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None:
-        record = _InMemoryStore.bid_example_drafts.get(thread_id)
+    def get_bid_example_draft(self, user_id: str, thread_id: str) -> BidExampleDraftRecord | None:
+        record = _InMemoryStore.bid_example_drafts.get(f"{user_id}:{thread_id}")
         return BidExampleDraftRecord.model_validate(copy.deepcopy(record)) if record else None
 
     def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        _InMemoryStore.bid_example_drafts[payload.thread_id] = payload.model_dump(mode="json")
+        _InMemoryStore.bid_example_drafts[f"{payload.user_id}:{payload.thread_id}"] = payload.model_dump(mode="json")
         return payload
 
     def get_bid_style(self, user_id: str) -> UserBidStyleRecord | None:
-        record = _InMemoryStore.bid_styles.get(bid_style_thread_id(user_id))
+        record = _InMemoryStore.bid_styles.get(f"{user_id}:{BID_STYLE_SK}")
         return UserBidStyleRecord.model_validate(copy.deepcopy(record)) if record else None
 
     def upsert_bid_style(self, record: UserBidStyleRecord) -> UserBidStyleRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        _InMemoryStore.bid_styles[payload.thread_id] = payload.model_dump(mode="json")
+        _InMemoryStore.bid_styles[f"{payload.user_id}:{BID_STYLE_SK}"] = payload.model_dump(mode="json")
         return payload
 
     def delete_bid_style(self, user_id: str) -> None:
-        _InMemoryStore.bid_styles.pop(bid_style_thread_id(user_id), None)
+        _InMemoryStore.bid_styles.pop(f"{user_id}:{BID_STYLE_SK}", None)
 
 
 class InMemoryTasksRepository:
@@ -102,10 +122,10 @@ class InMemoryTasksRepository:
 class DynamoProposalsRepository:
     def __init__(self) -> None:
         resource = boto3.resource("dynamodb", region_name=settings.aws_region)
-        self.table = resource.Table(settings.proposals_table_name)
+        self.table = resource.Table(settings.single_table_name)
 
-    def get(self, thread_id: str) -> ProposalThreadRecord | None:
-        result = self.table.get_item(Key={"thread_id": thread_id})
+    def get(self, user_id: str, thread_id: str) -> ProposalThreadRecord | None:
+        result = self.table.get_item(Key={"PK": user_pk(user_id), "SK": proposal_thread_sk(thread_id)})
         item = result.get("Item")
         if item and item.get("record_type"):
             return None
@@ -113,11 +133,17 @@ class DynamoProposalsRepository:
 
     def upsert(self, record: ProposalThreadRecord) -> ProposalThreadRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
+        item = {
+            "PK": user_pk(payload.user_id),
+            "SK": proposal_thread_sk(payload.thread_id),
+            "entity_type": "proposal_thread",
+            **payload.model_dump(mode="json", exclude_none=True),
+        }
+        self.table.put_item(Item=item)
         return payload
 
-    def get_bid_example_draft(self, thread_id: str) -> BidExampleDraftRecord | None:
-        result = self.table.get_item(Key={"thread_id": thread_id})
+    def get_bid_example_draft(self, user_id: str, thread_id: str) -> BidExampleDraftRecord | None:
+        result = self.table.get_item(Key={"PK": user_pk(user_id), "SK": bid_example_draft_sk(thread_id)})
         item = result.get("Item")
         if item and item.get("record_type") != "bid_example_draft":
             return None
@@ -125,36 +151,59 @@ class DynamoProposalsRepository:
 
     def upsert_bid_example_draft(self, record: BidExampleDraftRecord) -> BidExampleDraftRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
+        item = {
+            "PK": user_pk(payload.user_id),
+            "SK": bid_example_draft_sk(payload.thread_id),
+            **payload.model_dump(mode="json", exclude_none=True),
+        }
+        self.table.put_item(Item=item)
         return payload
 
     def get_bid_style(self, user_id: str) -> UserBidStyleRecord | None:
-        result = self.table.get_item(Key={"thread_id": bid_style_thread_id(user_id)})
+        result = self.table.get_item(Key={"PK": user_pk(user_id), "SK": BID_STYLE_SK})
         item = result.get("Item")
         return UserBidStyleRecord.model_validate(item) if item else None
 
     def upsert_bid_style(self, record: UserBidStyleRecord) -> UserBidStyleRecord:
         payload = record.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
+        item = {
+            "PK": user_pk(payload.user_id),
+            "SK": BID_STYLE_SK,
+            **payload.model_dump(mode="json", exclude_none=True),
+        }
+        self.table.put_item(Item=item)
         return payload
 
     def delete_bid_style(self, user_id: str) -> None:
-        self.table.delete_item(Key={"thread_id": bid_style_thread_id(user_id)})
+        self.table.delete_item(Key={"PK": user_pk(user_id), "SK": BID_STYLE_SK})
 
 
 class DynamoTasksRepository:
     def __init__(self) -> None:
         resource = boto3.resource("dynamodb", region_name=settings.aws_region)
-        self.table = resource.Table(settings.tasks_table_name)
+        self.table = resource.Table(settings.single_table_name)
 
     def create(self, task: TaskRecord) -> TaskRecord:
         payload = task.model_copy(update={"updated_at": utc_now()})
-        self.table.put_item(Item=payload.model_dump(mode="json", exclude_none=True))
+        item = {
+            "PK": user_pk(payload.user_id),
+            "SK": task_sk(payload.task_id),
+            "GSI1PK": task_sk(payload.task_id),
+            "GSI1SK": user_pk(payload.user_id),
+            "entity_type": "task",
+            **payload.model_dump(mode="json", exclude_none=True),
+        }
+        self.table.put_item(Item=item)
         return payload
 
     def get(self, task_id: str) -> TaskRecord | None:
-        result = self.table.get_item(Key={"task_id": task_id})
-        item = result.get("Item")
+        result = self.table.query(
+            IndexName="GSI1",
+            KeyConditionExpression=DynamoKey("GSI1PK").eq(task_sk(task_id)),
+            Limit=1,
+        )
+        items = result.get("Items", [])
+        item = items[0] if items else None
         return TaskRecord.model_validate(item) if item else None
 
     def update(self, task_id: str, **fields) -> TaskRecord | None:
@@ -162,7 +211,15 @@ class DynamoTasksRepository:
         if task is None:
             return None
         updated = task.model_copy(update={**fields, "updated_at": utc_now()})
-        self.table.put_item(Item=updated.model_dump(mode="json", exclude_none=True))
+        item = {
+            "PK": user_pk(updated.user_id),
+            "SK": task_sk(updated.task_id),
+            "GSI1PK": task_sk(updated.task_id),
+            "GSI1SK": user_pk(updated.user_id),
+            "entity_type": "task",
+            **updated.model_dump(mode="json", exclude_none=True),
+        }
+        self.table.put_item(Item=item)
         return updated
 
 

@@ -155,7 +155,7 @@ async def bids_sync_endpoint(request: BidSyncRequest) -> BidSyncResponse:
 @app.post(f"{settings.api_prefix}/proposals/bids/example", response_model=BidExampleDraftResponse)
 async def bid_example_endpoint(request: BidExampleDraftRequest) -> BidExampleDraftResponse:
     thread_id = request.thread_id or str(uuid4())
-    task = build_bid_example_task(thread_id)
+    task = build_bid_example_task(request.user_id, thread_id)
     try:
         validate_bid_example_draft_request(request)
         mark_task_started(task.task_id, thread_id=thread_id)
@@ -187,7 +187,7 @@ async def bid_example_endpoint(request: BidExampleDraftRequest) -> BidExampleDra
 @app.post(f"{settings.api_prefix}/proposals/generate", response_model=GenerateProposalResponse)
 async def generate_proposal_endpoint(request: GenerateProposalRequest) -> GenerateProposalResponse:
     thread_id = request.thread_id or str(uuid4())
-    task = build_generation_task(thread_id)
+    task = build_generation_task(request.user_id, thread_id)
     try:
         mark_task_started(task.task_id, thread_id=thread_id)
         response = run_generate_flow(
@@ -218,6 +218,7 @@ async def optimize_proposal_endpoint(request: OptimizeProposalRequest) -> Optimi
         response = run_optimize_flow(
             task.task_id,
             {
+                "user_id": request.user_id,
                 "thread_id": request.thread_id,
                 "selected_proposal_id": request.selected_proposal_id,
                 "feedback_msg": request.feedback_msg,

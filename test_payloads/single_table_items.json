@@ -1,0 +1,31 @@
+{
+  "proposal_thread": {
+    "PK": "USER#zain_zia_001",
+    "SK": "THREAD#thread_123",
+    "entity_type": "proposal_thread",
+    "user_id": "zain_zia_001",
+    "thread_id": "thread_123"
+  },
+  "bid_style": {
+    "PK": "USER#zain_zia_001",
+    "SK": "BID_STYLE",
+    "record_type": "user_bid_style",
+    "user_id": "zain_zia_001"
+  },
+  "bid_example_draft": {
+    "PK": "USER#zain_zia_001",
+    "SK": "BID_EXAMPLE_DRAFT#draft_thread_123",
+    "record_type": "bid_example_draft",
+    "user_id": "zain_zia_001",
+    "thread_id": "draft_thread_123"
+  },
+  "task": {
+    "PK": "USER#zain_zia_001",
+    "SK": "TASK#task_123",
+    "GSI1PK": "TASK#task_123",
+    "GSI1SK": "USER#zain_zia_001",
+    "entity_type": "task",
+    "task_id": "task_123",
+    "user_id": "zain_zia_001"
+  }
+}

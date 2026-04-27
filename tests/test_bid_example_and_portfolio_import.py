@@ -51,7 +51,7 @@ def test_bid_example_endpoint_creates_draft_without_touching_style_examples(clie
     assert body["example_bid"]["proposal_text"] == "Generated editable proposal"
     assert body["direct_answer"] is None
 
-    stored_draft = get_proposals_repository().get_bid_example_draft(body["thread_id"])
+    stored_draft = get_proposals_repository().get_bid_example_draft("zain_zia_001", body["thread_id"])
     assert stored_draft is not None
     assert stored_draft.example_bid.proposal_text == "Generated editable proposal"
     stored_style = get_proposals_repository().get_bid_style("zain_zia_001")
@@ -76,7 +76,7 @@ def test_bid_example_endpoint_updates_existing_draft(client, load_payload, monke
 
     assert response.status_code == 200
     assert response.json()["example_bid"]["proposal_text"] == "Warmer updated proposal"
-    stored_draft = get_proposals_repository().get_bid_example_draft(thread_id)
+    stored_draft = get_proposals_repository().get_bid_example_draft("zain_zia_001", thread_id)
     assert stored_draft.example_bid.proposal_text == "Warmer updated proposal"
 
 
@@ -96,7 +96,7 @@ def test_bid_example_endpoint_refuses_unrelated_request(client, load_payload, mo
     assert response.status_code == 200
     assert response.json()["direct_answer"] == "I can only generate an example bid i can not help you with that"
     assert response.json()["example_bid"]["proposal_text"] == "Initial editable proposal"
-    stored_draft = get_proposals_repository().get_bid_example_draft(thread_id)
+    stored_draft = get_proposals_repository().get_bid_example_draft("zain_zia_001", thread_id)
     assert stored_draft.example_bid.proposal_text == "Initial editable proposal"
 
 
@@ -114,7 +114,7 @@ def test_bid_example_endpoint_validates_missing_and_wrong_user_threads(client, l
     wrong_user_payload["thread_id"] = create_response.json()["thread_id"]
     wrong_user_payload["user_id"] = "different_user"
     wrong_user_response = client.post("/api/v1/proposals/bids/example", json=wrong_user_payload)
-    assert wrong_user_response.status_code == 403
+    assert wrong_user_response.status_code == 404
 
 
 def test_portfolio_pdf_parse_endpoint_returns_mistral_preview(client, monkeypatch):

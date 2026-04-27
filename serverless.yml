@@ -2,8 +2,7 @@ service: ai-proposal-api
 useDotenv: true
 
 custom:
-  proposalsTableName: ${env:USERS_PROPOSALS_TABLE_NAME, 'Users-Proposals'}
-  tasksTableName: ${env:TASKS_TABLE_NAME, 'Proposal-Tasks'}
+  singleTableName: ${env:SINGLE_TABLE_NAME, 'Proposal-Studio'}
 
 provider:
   name: aws
@@ -29,8 +28,7 @@ provider:
     PINECONE_INDEX_NAME: ${env:PINECONE_INDEX_NAME, 'freelance-portfolio-2'}
     LLM_PROVIDER: ${env:LLM_PROVIDER, 'groq'}
     USE_DYNAMODB: ${env:USE_DYNAMODB, 'true'}
-    USERS_PROPOSALS_TABLE_NAME: ${self:custom.proposalsTableName}
-    TASKS_TABLE_NAME: ${self:custom.tasksTableName}
+    SINGLE_TABLE_NAME: ${self:custom.singleTableName}
     RETRIEVAL_TOP_K: ${env:RETRIEVAL_TOP_K, '4'}
     RETRIEVAL_MAX_RETRIES: ${env:RETRIEVAL_MAX_RETRIES, '3'}
     SUMMARY_TRIGGER_MESSAGES: ${env:SUMMARY_TRIGGER_MESSAGES, '10'}
@@ -57,10 +55,8 @@ provider:
             - dynamodb:Scan
             - dynamodb:UpdateItem
           Resource:
-            - Fn::GetAtt: [UsersProposalsTable, Arn]
-            - Fn::Join: ['', [{ Fn::GetAtt: [UsersProposalsTable, Arn] }, '/index/*']]
-            - Fn::GetAtt: [ProposalTasksTable, Arn]
-            - Fn::Join: ['', [{ Fn::GetAtt: [ProposalTasksTable, Arn] }, '/index/*']]
+            - Fn::GetAtt: [ProposalStudioTable, Arn]
+            - Fn::Join: ['', [{ Fn::GetAtt: [ProposalStudioTable, Arn] }, '/index/*']]
         - Effect: Allow
           Action:
             - logs:CreateLogGroup
@@ -84,44 +80,31 @@ functions:
 
 resources:
   Resources:
-    UsersProposalsTable:
+    ProposalStudioTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: ${self:custom.proposalsTableName}
+        TableName: ${self:custom.singleTableName}
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: thread_id
+          - AttributeName: PK
             AttributeType: S
-          - AttributeName: user_id
+          - AttributeName: SK
             AttributeType: S
-        KeySchema:
-          - AttributeName: thread_id
-            KeyType: HASH
-        GlobalSecondaryIndexes:
-          - IndexName: user_id-index
-            KeySchema:
-              - AttributeName: user_id
-                KeyType: HASH
-            Projection:
-              ProjectionType: ALL
-
-    ProposalTasksTable:
-      Type: AWS::DynamoDB::Table
-      Properties:
-        TableName: ${self:custom.tasksTableName}
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: task_id
+          - AttributeName: GSI1PK
             AttributeType: S
-          - AttributeName: thread_id
+          - AttributeName: GSI1SK
             AttributeType: S
         KeySchema:
-          - AttributeName: task_id
+          - AttributeName: PK
             KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
         GlobalSecondaryIndexes:
-          - IndexName: thread_id-index
+          - IndexName: GSI1
             KeySchema:
-              - AttributeName: thread_id
+              - AttributeName: GSI1PK
                 KeyType: HASH
+              - AttributeName: GSI1SK
+                KeyType: RANGE
             Projection:
               ProjectionType: ALL
