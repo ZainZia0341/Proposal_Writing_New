@@ -34,8 +34,8 @@ Important architecture note:
 4. Full Stack calls `POST /api/v1/proposals/bids/sync` with up to 5 previous job + sent proposal pairs.
 5. AI backend cleans those bids into markdown and stores them in `Users-Proposals` under a user-style record.
 6. Full Stack can call `POST /api/v1/proposals/bids/example` to generate or revise an editable sample bid draft.
-7. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details`.
-8. AI backend loads the stored previous bids, passes all of them together to the LLM, and lets the LLM infer the best hook/style for the current job.
+7. Full Stack calls `POST /api/v1/proposals/generate` with `user_profile + job_details` and optional `hook`.
+8. AI backend loads the stored previous bids, passes all of them together to the LLM, and uses the frontend hook as the primary angle when provided.
 9. AI backend stores the generated proposal thread in `Users-Proposals`.
 10. Full Stack calls `POST /api/v1/proposals/optimize` with only `thread_id + selected_proposal_id + feedback_msg`.
 
@@ -310,7 +310,7 @@ Unrelated request response:
 Purpose:
 
 - generate three proposal alternatives
-- use current user profile + current job details + accepted retrieved projects
+- use current user profile + current job details + optional hook + accepted retrieved projects
 - use all stored previous bids together as style examples
 - store the proposal thread in `Users-Proposals`
 
@@ -319,6 +319,7 @@ Request:
 ```json
 {
   "user_id": "user_123",
+  "hook": "Lead with a quick technical diagnosis before pitching the implementation.",
   "user_profile": {
     "full_name": "Zain Zia",
     "designation": "Generative AI Developer",
@@ -345,6 +346,7 @@ Request field notes:
   - `job_details`
 - optional top-level fields:
   - `thread_id`
+  - `hook`
 - `user_profile` required fields:
   - `full_name`
   - `designation`
@@ -379,7 +381,8 @@ How style learning works:
 
 - the backend loads all stored bids for that user, up to 5
 - all examples are passed together in one prompt
-- the LLM decides which hook/style suits the current job best
+- when `hook` is provided, the LLM treats it as the primary proposal angle and uses previous bids for voice/style
+- when `hook` is not provided, the LLM decides which hook/style suits the current job best from the stored bids
 - the LLM must not copy old facts, client names, budgets, or unsupported skills into the new proposal
 
 Response:
@@ -541,6 +544,7 @@ For proposal generation:
 - `user_id`
 - `user_profile`
 - `job_details`
+- optional `hook`
 
 For proposal optimization:
 
@@ -558,6 +562,7 @@ Proposal thread records store:
 - `user_id`
 - `user_profile_snapshot`
 - `job_details`
+- `hook`
 - `proposals`
 - `selected_proposal_id`
 - `messages`

@@ -178,10 +178,10 @@ def test_generation_endpoint_creates_task_with_non_null_thread_id(client, load_p
 
     monkeypatch.setattr(main_module, "build_generation_task", fake_build_generation_task)
     monkeypatch.setattr(main_module, "mark_task_started", lambda task_id, thread_id=None: None)
-    monkeypatch.setattr(
-        main_module,
-        "run_generate_flow",
-        lambda task_id, payload: main_module.GenerateProposalResponse(
+
+    def fake_run_generate_flow(task_id, payload):
+        captured["hook"] = payload.get("hook")
+        return main_module.GenerateProposalResponse(
             thread_id=payload["thread_id"],
             task_id=task_id,
             status=TaskStatus.COMPLETED,
@@ -191,14 +191,22 @@ def test_generation_endpoint_creates_task_with_non_null_thread_id(client, load_p
             retrieved_project_ids=[],
             summary=None,
             model_used=None,
-        ),
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "run_generate_flow",
+        fake_run_generate_flow,
     )
     monkeypatch.setattr(main_module, "finalize_generation_result", lambda task_id, response: response)
 
-    response = client.post("/api/v1/proposals/generate", json=load_payload("generate_proposal.json"))
+    payload = load_payload("generate_proposal.json")
+    payload["hook"] = "  Lead with a quick audit of the client's AI story flow.  "
+    response = client.post("/api/v1/proposals/generate", json=payload)
     assert response.status_code == 200
     assert isinstance(captured["thread_id"], str)
     assert captured["thread_id"]
+    assert captured["hook"] == "Lead with a quick audit of the client's AI story flow."
 
 
 def test_generate_tolerates_legacy_template_field(client, load_payload, monkeypatch):
@@ -333,7 +341,8 @@ def test_payload_files_match_request_models(load_payload):
     assert BidExampleDraftRequest.model_validate(load_payload("generate_bid_example.json"))
     assert BidExampleDraftRequest.model_validate(load_payload("update_bid_example.json"))
     assert BidExampleDraftRequest.model_validate(load_payload("bid_example_unrelated_request.json"))
-    assert GenerateProposalRequest.model_validate(load_payload("generate_proposal.json"))
+    generate_request = GenerateProposalRequest.model_validate(load_payload("generate_proposal.json"))
+    assert generate_request.hook == "Lead with how the AI story flow can stay reliable and easy to extend."
     aliased = GenerateProposalRequest.model_validate(load_payload("generate_proposal_job_description_alias.json"))
     assert aliased.job_details.description == "We need an expert to build secure API gateways and handle financial transactions."
     assert OptimizeProposalRequest.model_validate(load_payload("optimize_proposal_direct_answer.json"))

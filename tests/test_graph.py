@@ -239,6 +239,52 @@ def test_graph_propagates_model_used_into_generate_response(monkeypatch):
     assert response.model_used == "groq:openai/gpt-oss-120b"
 
 
+def test_generate_flow_passes_hook_to_generation_prompt_and_persists(monkeypatch):
+    import app.graph as graph
+
+    hook = "Lead with a short audit of their onboarding workflow."
+    captured: dict[str, str | None] = {}
+
+    _seed_bid_style()
+    monkeypatch.setattr(graph, "_plan_vector_query_with_llm", lambda state: "onboarding workflow audit")
+    monkeypatch.setattr(graph, "_verify_retrieval_with_llm", lambda state: {"accepted": True, "rationale": "Matched hook"})
+
+    def fake_generate_proposals(state):
+        captured["hook"] = state.get("hook")
+        captured["pinned_context"] = state.get("pinned_context")
+        return [
+            graph.ProposalOption(id="alt_1", label="Balanced", text="P1"),
+            graph.ProposalOption(id="alt_2", label="Consultative", text="P2"),
+            graph.ProposalOption(id="alt_3", label="Fast Mover", text="P3"),
+        ]
+
+    monkeypatch.setattr(graph, "_generate_proposals_with_llm", fake_generate_proposals)
+
+    response = run_generate_flow(
+        "task_hook",
+        {
+            "user_id": "zain_zia_001",
+            "thread_id": "thread_hook",
+            "user_profile": USER_SNAPSHOT.model_dump(mode="json"),
+            "job_details": JobDetails(
+                title="AI Developer",
+                description="Need a strong RAG engineer",
+                budget="$2,000",
+                skills_required=["Python", "Pinecone"],
+                client_info="Startup",
+            ).model_dump(mode="json"),
+            "hook": hook,
+        },
+    )
+
+    assert len(response.proposals) == 3
+    assert captured["hook"] == hook
+    assert f"User-Provided Proposal Hook: {hook}" in (captured["pinned_context"] or "")
+    stored = get_proposals_repository().get("thread_hook")
+    assert stored is not None
+    assert stored.hook == hook
+
+
 def test_graph_uses_fallback_after_three_failed_retrieval_attempts(monkeypatch):
     import app.graph as graph
 
@@ -308,6 +354,7 @@ def test_fallback_prompt_bans_empty_portfolio_placeholders(monkeypatch):
     import app.graph as graph
 
     captured: dict[str, str] = {}
+    hook = "Focus on reducing risk before writing new features."
 
     def fake_invoke_json(*, system_prompt, user_prompt, fallback):
         captured["system_prompt"] = system_prompt
@@ -327,6 +374,7 @@ def test_fallback_prompt_bans_empty_portfolio_placeholders(monkeypatch):
                 client_info="Solo founder",
             ).model_dump(mode="json"),
             "pinned_context": "Pinned job and user context",
+            "hook": hook,
             "messages": [],
             "retrieved_projects": [],
             "bid_examples_markdown": [],
@@ -336,6 +384,8 @@ def test_fallback_prompt_bans_empty_portfolio_placeholders(monkeypatch):
     assert len(proposals) == 3
     assert "Relevant portfolio examples available on request" in captured["system_prompt"]
     assert "omit portfolio and relevant-experience sections entirely" in captured["system_prompt"]
+    assert "primary proposal angle" in captured["system_prompt"]
+    assert hook in captured["user_prompt"]
     joined = "\n\n".join(proposal.text for proposal in proposals)
     assert "Relevant experience" not in joined
     assert "Relevant portfolio examples available on request" not in joined
@@ -345,6 +395,7 @@ def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(mo
     import app.graph as graph
 
     captured: dict[str, str] = {}
+    hook = "Open with a quick diagnosis of the AI workflow before proposing the build."
 
     def fake_invoke_json(*, system_prompt, user_prompt, fallback):
         captured["system_prompt"] = system_prompt
@@ -364,6 +415,7 @@ def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(mo
                 client_info="Startup",
             ).model_dump(mode="json"),
             "pinned_context": "Pinned job and user context",
+            "hook": hook,
             "messages": [],
             "retrieved_projects": [],
             "bid_examples_markdown": [
@@ -377,6 +429,9 @@ def test_generate_prompt_includes_all_bid_examples_and_excludes_template_text(mo
     assert "Previous Bid Example 2" in captured["user_prompt"]
     assert "Proposal one" in captured["user_prompt"]
     assert "Proposal two" in captured["user_prompt"]
+    assert "Frontend-provided hook" in captured["user_prompt"]
+    assert hook in captured["user_prompt"]
+    assert "primary proposal angle" in captured["system_prompt"]
     assert "template" not in captured["system_prompt"].lower()
 
 

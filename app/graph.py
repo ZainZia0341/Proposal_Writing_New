@@ -44,6 +44,7 @@ class ProposalState(MessagesState):
     bid_examples_markdown: list[str]
     user_profile: dict[str, Any]
     job_details: dict[str, Any]
+    hook: str | None
     thread_record: dict[str, Any] | None
     selected_proposal_id: str | None
     feedback_msg: str | None
@@ -197,6 +198,7 @@ def _build_selected_proposal(state: ProposalState) -> dict[str, Any] | None:
 def _build_pinned_context(state: ProposalState, summary: str | None = None) -> str:
     user = state.get("user_profile") or {}
     job = state["job_details"]
+    hook = (state.get("hook") or "").strip()
     selected_proposal = _build_selected_proposal(state)
     lines = [
         f"User Name: {user.get('full_name', 'Not provided')}",
@@ -210,6 +212,8 @@ def _build_pinned_context(state: ProposalState, summary: str | None = None) -> s
         f"Skills: {', '.join(job.get('required_skills', []))}",
         f"Client Info: {job.get('client_info') or 'Not provided'}",
     ]
+    if hook:
+        lines.append(f"User-Provided Proposal Hook: {hook}")
     current_summary = summary if summary is not None else state.get("summary")
     if current_summary:
         lines.append(f"Conversation Summary: {current_summary}")
@@ -227,6 +231,13 @@ def _bid_examples_to_text(state: ProposalState) -> str:
     for index, example in enumerate(bid_examples, start=1):
         rendered.append(f"### Previous Bid Example {index}\n{example}")
     return "\n\n---\n\n".join(rendered)
+
+
+def _hook_to_text(state: ProposalState) -> str:
+    hook = (state.get("hook") or "").strip()
+    if not hook:
+        return "No frontend-provided hook was provided."
+    return hook
 
 
 def _summarize_messages(messages: list[BaseMessage], existing_summary: str | None = None) -> str:
@@ -281,6 +292,7 @@ def _plan_vector_query_with_llm(state: ProposalState) -> str:
             for part in [
                 state["job_details"]["title"],
                 state["job_details"]["description"],
+                state.get("hook") or "",
                 ", ".join(state["job_details"].get("required_skills", [])),
                 state.get("feedback_msg") or "",
             ]
@@ -295,6 +307,7 @@ def _plan_vector_query_with_llm(state: ProposalState) -> str:
         user_prompt=json.dumps(
             {
                 "job_details": state["job_details"],
+                "hook": state.get("hook"),
                 "feedback_msg": state.get("feedback_msg"),
                 "pinned_context": state["pinned_context"],
             },
@@ -322,6 +335,7 @@ def _verify_retrieval_with_llm(state: ProposalState) -> dict[str, Any]:
         user_prompt=json.dumps(
             {
                 "job_details": state["job_details"],
+                "hook": state.get("hook"),
                 "feedback_msg": state.get("feedback_msg"),
                 "retrieved_projects": state.get("retrieved_projects", []),
             },
@@ -334,6 +348,7 @@ def _verify_retrieval_with_llm(state: ProposalState) -> dict[str, Any]:
 def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
     user = state["user_profile"]
     job = state["job_details"]
+    hook = (state.get("hook") or "").strip()
     supported_skills = user.get("experience_languages", [])
     requested_skills = job.get("required_skills", [])
     skills = ", ".join(supported_skills or requested_skills)
@@ -349,6 +364,7 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
         if requested_skills
         else ""
     )
+    hook_sentence = f" The proposal angle you asked to emphasize is: {hook}." if hook else ""
     variants = [
         ProposalOption(
             id="alt_1",
@@ -356,7 +372,7 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
             text=(
                 f"Hi, this sounds like a strong fit.\n\n"
                 f"I'm {user['full_name']}, a {user['designation']}{skills_sentence}. "
-                f"Your job around {job['title']} is the kind of work where a clear technical plan and careful delivery matter.{requested_skills_sentence}\n\n"
+                f"Your job around {job['title']} is the kind of work where a clear technical plan and careful delivery matter.{hook_sentence}{requested_skills_sentence}\n\n"
                 f"{experience_section}"
                 f"I can help you deliver this with a practical and reliable implementation. Would you like me to outline the execution plan?\n\n"
                 f"Best,\n{user['full_name']}"
@@ -368,7 +384,7 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
             text=(
                 f"Hi, this aligns closely with the type of structured technical work I focus on.\n\n"
                 f"The challenge in {job['title']} is not only shipping features, but making sure the solution is maintainable and aligned with the requirements. "
-                f"I would start by clarifying the core workflow, integration points, and success criteria before implementation.{requested_skills_sentence}\n\n"
+                f"I would start by clarifying the core workflow, integration points, and success criteria before implementation.{hook_sentence}{requested_skills_sentence}\n\n"
                 f"{experience_section}"
                 f"If helpful, I can break this into milestones and recommend a clean technical approach.\n\n"
                 f"Best,\n{user['full_name']}"
@@ -379,7 +395,7 @@ def _fallback_generation(state: ProposalState) -> list[ProposalOption]:
             label="Fast Mover",
             text=(
                 f"I can definitely help here.\n\n"
-                f"My background as a {user['designation']} helps me bridge product goals with clean implementation on a project like {job['title']}.{requested_skills_sentence}\n\n"
+                f"My background as a {user['designation']} helps me bridge product goals with clean implementation on a project like {job['title']}.{hook_sentence}{requested_skills_sentence}\n\n"
                 f"{experience_section}"
                 f"If you want, I can start with the highest-impact deliverable first and keep the scope tight.\n\n"
                 f"Best,\n{user['full_name']}"
@@ -400,9 +416,13 @@ def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
             "The ids must be alt_1, alt_2, and alt_3. "
             "You will receive previous bid examples written by the user. Study all of them together and infer the user's natural hook, tone, CTA style, pacing, and structure. "
             "Choose the hook and style that best fit the current job. "
+            "If a frontend-provided hook is present, treat it as the primary proposal angle and weave it into the opening and body wherever natural. "
+            "Do not use the word 'hook' in the proposal text, and do not tell the client a hook was provided. Translate the hook into natural client-facing language. "
+            "Use the previous bid examples to shape the voice around that hook. "
             "Use those examples only as writing-style references, never as factual evidence for the current proposal. "
             "Stay strictly grounded in the provided user profile, accepted retrieved projects, and job details. "
             "Do not mention any skill, tool, framework, certification, domain experience, or project detail unless it is explicitly supported by the provided context. "
+            "Do not turn the frontend-provided hook into an unsupported experience claim. "
             "Do not let job-description keywords push you into claiming experience the user does not actually have. "
             "Never copy old client names, job facts, budgets, or project claims from the previous bid examples into the new proposal. "
             "You may adapt the user's style naturally, but you must remain within the factual boundaries of the provided context. "
@@ -410,6 +430,7 @@ def _generate_proposals_with_llm(state: ProposalState) -> list[ProposalOption]:
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Frontend-provided hook:\n{_hook_to_text(state)}\n\n"
             f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             f"Accepted retrieved projects:\n{projects_text or 'No accepted retrieved projects. Use only confirmed user profile and job context. Do not mention any project details.'}"
@@ -428,18 +449,23 @@ def _generate_fallback_proposals_with_llm(state: ProposalState) -> list[Proposal
             "trusted supporting projects. Return JSON with key alternatives, an array of objects containing "
             "id, label, and text. The ids must be alt_1, alt_2, and alt_3. "
             "You will receive previous bid examples written by the user. Study all of them together and infer the user's likely hook, tone, CTA style, pacing, and structure for the current job. "
+            "If a frontend-provided hook is present, make it the primary proposal angle and weave it into the opening and body wherever natural. "
+            "Do not use the word 'hook' in the proposal text, and do not tell the client a hook was provided. Translate the hook into natural client-facing language. "
+            "Use the previous bid examples to shape the voice around that hook. "
             "Use those examples only as style references. "
             "Use only the provided user profile, job details, and recent conversation as factual grounding. "
             "Do not mention any project name, project achievement, or project detail because retrieval did not produce accepted evidence. "
             "Do not add empty experience headings, portfolio placeholders, or phrases like 'Relevant portfolio examples available on request'. "
             "If there are no accepted retrieved projects, omit portfolio and relevant-experience sections entirely. "
             "Do not mention any skill, tool, framework, certification, or domain experience unless it is explicitly supported by the provided user profile. "
+            "Do not turn the frontend-provided hook into an unsupported experience claim. "
             "Do not let job-description keywords influence you into adding unsupported skills. "
             "Never copy old client names, job facts, budgets, or project claims from the previous bid examples. "
             "You may write naturally and creatively, but you must stay strictly inside the factual boundaries of the provided context."
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Frontend-provided hook:\n{_hook_to_text(state)}\n\n"
             f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             "Retriever status:\n"
@@ -466,14 +492,18 @@ def _revise_proposal_with_llm(state: ProposalState, base_text: str) -> str:
             "apply the feedback exactly, and avoid inventing facts. "
             "You will receive previous bid examples written by the user. Study all of them together and infer the user's natural hook, tone, CTA style, pacing, and structure. "
             "Use those examples only as writing-style references if they help you make the revision sound more like the user. "
+            "If a frontend-provided hook is present in the pinned context, preserve that angle unless the user's feedback asks for a different direction. "
+            "Do not use the word 'hook' in the proposal text, and do not tell the client a hook was provided. Translate the hook into natural client-facing language. "
             "Do not add any skill, tool, framework, certification, industry background, or project detail unless it is explicitly supported by the provided context. "
             "Do not let the job description or feedback wording push you into claiming experience the user has not actually shown. "
+            "Do not turn the frontend-provided hook into an unsupported experience claim. "
             "If there are no accepted retrieved projects, do not add project-specific claims. "
             "Never copy old client names, job facts, budgets, or project claims from the previous bid examples. "
             "You may improve the writing while staying strictly within factual boundaries."
         ),
         user_prompt=(
             f"Pinned context:\n{state['pinned_context']}\n\n"
+            f"Frontend-provided hook:\n{_hook_to_text(state)}\n\n"
             f"Previous bid examples:\n{bid_examples_text}\n\n"
             f"Recent messages:\n{_messages_to_text(state['messages'])}\n\n"
             f"Selected proposal:\n{base_text}\n\n"
@@ -690,6 +720,7 @@ def initialize_context(
         if not user_profile:
             raise ValueError("Generate flow requires full stack user_profile in the request payload.")
         bid_style_record = proposals_repo.get_bid_style(state["user_id"])
+        hook = state.get("hook") or (thread_record.get("hook") if thread_record else None)
     else:
         if thread_record is None:
             raise ValueError(f"Thread '{state['thread_id']}' was not found.")
@@ -697,9 +728,11 @@ def initialize_context(
         if not user_profile:
             raise ValueError("Thread is missing stored full stack user_profile context. Regenerate the thread with user_profile.")
         bid_style_record = proposals_repo.get_bid_style(thread_record.get("user_id") or state["user_id"])
+        hook = thread_record.get("hook") or state.get("hook")
 
     updates: dict[str, Any] = {
         "user_profile": user_profile,
+        "hook": hook,
         "thread_record": thread_record,
         "bid_examples_markdown": [bid.markdown for bid in bid_style_record.bids] if bid_style_record else [],
         "retrieval_attempt": 0,
@@ -995,6 +1028,7 @@ def persist_result(state: ProposalState) -> dict[str, Any]:
             user_id=state["user_id"],
             thread_id=state["thread_id"],
             job_details=state["job_details"],
+            hook=state.get("hook"),
             user_profile_snapshot=FullStackUserProfile.model_validate(state["user_profile"]),
             template_snapshot=None,
             template_id=None,
@@ -1102,6 +1136,7 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
     existing_thread = get_proposals_repository().get(payload["thread_id"])
     if existing_thread and existing_thread.user_id != payload["user_id"]:
         raise ValueError(f"Thread '{payload['thread_id']}' does not belong to user '{payload['user_id']}'.")
+    hook = str(payload.get("hook") or "").strip() or None
 
     messages = []
     summary = None
@@ -1109,11 +1144,14 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
         messages = [_schema_to_langchain(message, index) for index, message in enumerate(existing_thread.messages)]
         summary = existing_thread.summary
 
+    human_message = (
+        "Generate three proposal alternatives for this job.\n\n"
+        f"{json.dumps(payload['job_details'], indent=2)}"
+    )
+    if hook:
+        human_message = f"{human_message}\n\nFrontend-provided hook:\n{hook}"
     messages.append(
-        _human_message(
-            "Generate three proposal alternatives for this job.\n\n"
-            f"{json.dumps(payload['job_details'], indent=2)}"
-        )
+        _human_message(human_message)
     )
     result = proposal_graph.invoke(
         {
@@ -1123,6 +1161,7 @@ def run_generate_flow(task_id: str, payload: dict[str, Any]) -> GenerateProposal
             "thread_id": payload["thread_id"],
             "user_profile": payload["user_profile"],
             "job_details": payload["job_details"],
+            "hook": hook,
             "messages": messages,
             "summary": summary,
         }

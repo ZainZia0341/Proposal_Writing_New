@@ -110,9 +110,11 @@ Removed from the AI backend:
   - `user_id`
   - `user_profile`
   - `job_details`
+  - optional `hook`
 - backend loads:
   - stored previous bids for style learning
   - accepted retrieved projects from Pinecone
+- generation uses the frontend `hook` as the primary proposal angle when provided
 - backend stores:
   - `user_profile_snapshot`
   - `job_details`
@@ -225,6 +227,7 @@ Proposal thread item example:
 {
   "thread_id": "test_thread_555",
   "user_id": "zain_zia_001",
+  "hook": "Lead with how the AI story flow can stay reliable and easy to extend.",
   "user_profile_snapshot": {
     "full_name": "Zain Zia",
     "designation": "Generative AI Developer",
@@ -328,6 +331,7 @@ Full Stack should send to AI backend for proposal generation:
 - `user_id`
 - `user_profile`
 - `job_details`
+- optional `hook`
 
 Full Stack should send to AI backend for proposal optimization:
 

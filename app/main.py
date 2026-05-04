@@ -197,6 +197,7 @@ async def generate_proposal_endpoint(request: GenerateProposalRequest) -> Genera
                 "thread_id": thread_id,
                 "user_profile": request.user_profile.model_dump(mode="json"),
                 "job_details": request.job_details.model_dump(mode="json"),
+                "hook": request.hook,
             },
         )
         return finalize_generation_result(task.task_id, response)

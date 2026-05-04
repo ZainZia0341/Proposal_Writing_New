@@ -254,6 +254,7 @@ class ProposalThreadRecord(BaseModel):
     user_id: str
     thread_id: str
     job_details: JobDetails
+    hook: str | None = None
     user_profile_snapshot: FullStackUserProfile | None = None
     template_snapshot: TemplateSnapshot | None = None
     template_id: str | None = None
@@ -276,7 +277,16 @@ class GenerateProposalRequest(BaseModel):
     thread_id: str | None = None
     user_profile: FullStackUserProfile
     job_details: JobDetails
+    hook: str | None = None
     async_mode: bool = False
+
+    @field_validator("hook", mode="before")
+    @classmethod
+    def normalize_hook(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
 
 class GenerateProposalResponse(BaseModel):
